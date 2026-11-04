@@ -4464,9 +4464,12 @@ input[type="range"]:disabled {
   display: flex;
   flex-direction: column;
   gap: 7px;
-  width: 240px;
+  /* Wide enough that the two 125%-scaled columns never overflow their tracks:
+     "恢复默认色" plus its counter is ~125px wide, so 2 x 127px + gutters. */
+  width: 288px;
   max-width: calc(100vw - 32px);
-  padding: 9px;
+  /* Extra inset so the gold "restore" outline never grazes the menu border. */
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 15px;
   background: rgba(3, 13, 25, 0.88);
@@ -4484,12 +4487,15 @@ input[type="range"]:disabled {
 }
 
 .qd-menu::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
 }
 
 .qd-menu::-webkit-scrollbar-thumb {
-  border-radius: 3px;
+  /* Inset thumb: the track keeps a little air next to the menu border. */
+  border: 2px solid transparent;
+  border-radius: 4px;
   background: rgba(92, 225, 255, 0.26);
+  background-clip: content-box;
 }
 
 .qd-menu::-webkit-scrollbar-track {
@@ -4501,7 +4507,7 @@ input[type="range"]:disabled {
    at 130% UI scale a 900px window leaves ~620px of stage. */
 .quick-dock.is-compact .qd-menu {
   gap: 4px;
-  padding: 6px;
+  padding: 10px;
 }
 
 .quick-dock.is-compact .qd-row {
@@ -4537,8 +4543,10 @@ input[type="range"]:disabled {
 /* related actions stay together: 2-up rows split by hairline separators */
 .qd-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 7px;
+  /* minmax(0, 1fr): a nowrap label may never widen a track past the menu
+     padding box (which used to push the restore button into the border). */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .qd-sep {
@@ -4635,6 +4643,7 @@ input[type="range"]:disabled {
   align-items: center;
   justify-content: flex-start;
   gap: 9px;
+  min-width: 0;
   min-height: 45px;
   padding: 9px 11px;
   border: 1px solid rgba(92, 225, 255, 0.14);
@@ -4688,7 +4697,10 @@ input[type="range"]:disabled {
 }
 
 .qd-btn span {
+  min-width: 0;
+  overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .qd-btn em:empty {
@@ -5360,9 +5372,9 @@ input[type="range"]:disabled {
 /* --- responsive ---------------------------------------------------- */
 @media (max-width: 1260px) {
   .qd-menu {
-    width: 222px;
+    width: 260px;
     gap: 6px;
-    padding: 8px;
+    padding: 10px;
   }
 
   .qd-btn {
@@ -5391,9 +5403,9 @@ input[type="range"]:disabled {
   }
 
   .qd-menu {
-    width: min(250px, calc(100vw - 16px));
+    width: min(268px, calc(100vw - 20px));
     gap: 6px;
-    padding: 8px;
+    padding: 10px;
   }
 
   .qd-btn {

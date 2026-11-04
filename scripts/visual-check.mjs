@@ -1586,7 +1586,16 @@ async function main() {
         text: (node.textContent || '').replace(/\s+/g, ' ').trim(),
       }));
       const status = document.querySelector('#qd-status');
+      const menuRect = document.querySelector('#qd-menu').getBoundingClientRect();
+      const restoreRect = document.querySelector('#qd-color-restore').getBoundingClientRect();
+      const exportRect = document.querySelector('#qd-export').getBoundingClientRect();
       return {
+        menu: { right: menuRect.right, left: menuRect.left },
+        inset: {
+          restoreRight: menuRect.right - restoreRect.right,
+          exportRight: menuRect.right - exportRect.right,
+          restoreLeft: restoreRect.left - menuRect.left,
+        },
         stage: { right: stage.right, bottom: stage.bottom, width: stage.width, height: stage.height },
         dock: { right: dock.right, bottom: dock.bottom, width: dock.width, height: dock.height },
         buttons,
@@ -1628,6 +1637,12 @@ async function main() {
       '常驻菜单包含全部常驻按钮',
       requiredDockIds.every((id) => dockIds.includes(id)),
       dockBox.buttons.map((button) => button.id + ':' + button.text).join(' | '),
+    );
+    record(
+      '常驻菜单按钮不越出菜单内边距',
+      dockBox.inset.restoreRight >= 11 &&
+        Math.abs(dockBox.inset.restoreRight - dockBox.inset.exportRight) < 0.6,
+      JSON.stringify(dockBox.inset),
     );
     record(
       '常驻菜单内嵌速度与半径滑杆',
@@ -1792,10 +1807,17 @@ async function main() {
     await settle(page, 400);
     const restoreVisible = await page.evaluate(() => {
       const button = document.querySelector('#qd-color-restore');
+      const menuRect = document.querySelector('#qd-menu').getBoundingClientRect();
+      const buttonRect = button.getBoundingClientRect();
+      const label = button.querySelector('span');
       return {
         disabled: button.disabled,
         count: document.querySelector('#qd-color-restore-count').textContent,
         colors: Object.keys(window.__CRYSTAL_DEBUG__.getState().atomColors || {}),
+        inset: {
+          restoreRight: menuRect.right - buttonRect.right,
+          spanFits: label.scrollWidth <= label.clientWidth + 1,
+        },
       };
     });
     record(
@@ -1804,6 +1826,12 @@ async function main() {
         restoreVisible.colors.length === 1 &&
         restoreVisible.count.trim() === '1',
       JSON.stringify(restoreVisible),
+    );
+    record(
+      '“恢复默认色”带计数时仍不贴住菜单边框',
+      restoreVisible.inset.restoreRight >= 11 &&
+        restoreVisible.inset.spanFits === true,
+      JSON.stringify(restoreVisible.inset),
     );
     await page.locator('#qd-color-restore').click();
     await settle(page, 500);
