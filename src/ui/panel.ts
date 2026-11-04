@@ -18,6 +18,7 @@ import { filterSites } from '../site-filter';
 import {
   RADIAL_SPLIT,
   atomEditCount,
+  clampUiScale,
   resolveAtomColor,
   resolveAtomSize,
   resolveCellStyle,
@@ -125,13 +126,23 @@ export class Panel {
       const head = section.querySelector<HTMLButtonElement>('.ps-head');
       const body = section.querySelector<HTMLElement>('.ps-body');
       if (!head || !body) continue;
-      head.addEventListener('click', () => {
-        const open = !section.classList.contains('is-open');
+      // Animate collapsed sections through grid-template-rows instead of the
+      // [hidden] attribute (which cannot be transitioned). The inner box keeps
+      // min-height: 0 so 1fr -> 0fr interpolates smoothly.
+      if (!body.querySelector(':scope > .ps-body-inner')) {
+        const inner = document.createElement('div');
+        inner.className = 'ps-body-inner';
+        while (body.firstChild) inner.appendChild(body.firstChild);
+        body.appendChild(inner);
+      }
+      const applyOpen = (open: boolean): void => {
         section.classList.toggle('is-open', open);
         head.setAttribute('aria-expanded', String(open));
-        body.hidden = !open;
+        body.inert = !open;
         if (open && name === 'sites') section.classList.remove('is-highlight');
-      });
+      };
+      body.inert = !section.classList.contains('is-open');
+      head.addEventListener('click', () => applyOpen(!section.classList.contains('is-open')));
     }
 
     this.bindControls();
@@ -389,6 +400,12 @@ export class Panel {
       });
     });
 
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ui-scale]')) {
+      button.addEventListener('click', () => {
+        store.set({ uiScale: clampUiScale(Number(button.dataset.uiScale)) });
+      });
+    }
+
     byId<HTMLButtonElement>('panel-close').addEventListener('click', () => this.togglePanel());
   }
 
@@ -428,11 +445,10 @@ export class Panel {
     this.panelToggle.setAttribute('aria-expanded', String(!collapsed));
     this.panel.setAttribute('aria-hidden', String(collapsed));
     this.panel.inert = collapsed;
-    document.getElementById('panel-reopen')?.setAttribute('aria-expanded', String(!collapsed));
-    // No synthetic resize burst here: the canvas ResizeObserver already fires
-    // exactly once when the grid column changes, so the rotating cube keeps its
-    // framing and never flashes while the deck slides away.
-    this.grid?.classList.remove('panel-animating');
+    const handle = document.getElementById('panel-reopen');
+    handle?.setAttribute('aria-expanded', String(!collapsed));
+    handle?.setAttribute('aria-label', collapsed ? '展开实验控制台' : '收起实验控制台');
+    if (handle) handle.title = collapsed ? '展开实验控制台' : '收起实验控制台';
   }
 
   togglePanel(): void {
@@ -481,18 +497,62 @@ export class Panel {
       const head = section.querySelector<HTMLButtonElement>('.ps-head');
       const body = section.querySelector<HTMLElement>('.ps-body');
       head?.setAttribute('aria-expanded', 'true');
-      if (body) body.hidden = false;
+      if (body) body.inert = false;
     }
     if (scrollIntoView && this.scroll) {
-      const offset =
-        this.scroll.scrollTop +
-        section.getBoundingClientRect().top -
-        this.scroll.getBoundingClientRect().top -
-        8;
-      // Auto (not smooth): the call may happen while the panel is being
-      // revealed, and a smooth scroll can be cancelled by that layout change.
-      this.scroll.scrollTo({ top: Math.max(0, offset), behavior: 'auto' });
+      this.pinSection(section);
     }
+  }
+
+  /**
+   * Keep one section anchored to the top of the scroll area while its body
+   * expands. The expansion grows the scrollable height across several frames,
+   * and a later re-render can reset scrollTop, so a single scroll call is not
+   * enough; track the target for a short window and back off on user input.
+   */
+  private pinSection(section: HTMLElement, durationMs = 2500): void {
+    const scroller = this.scroll;
+    if (!scroller) return;
+    const started = performance.now();
+    const body = section.querySelector<HTMLElement>('.ps-body');
+    let frame = 0;
+    let lastHeight = -1;
+    let stableFrames = 0;
+    const cancel = (): void => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      scroller.removeEventListener('wheel', cancel);
+      scroller.removeEventListener('touchstart', cancel);
+      scroller.removeEventListener('pointerdown', cancel);
+    };
+    const anchor = (): void => {
+      const offset =
+        scroller.scrollTop +
+        section.getBoundingClientRect().top -
+        scroller.getBoundingClientRect().top -
+        8;
+      // Auto (not smooth): the panel may be revealed in the same frame, and a
+      // smooth scroll would be cancelled by that layout change.
+      scroller.scrollTo({ top: Math.max(0, offset), behavior: 'auto' });
+      // Follow the expansion until its height has been stable for a while, so
+      // slow frames cannot end the pinning before the section actually opens;
+      // the elapsed cap only guards against pathological cases.
+      const height = body
+        ? body.getBoundingClientRect().height
+        : section.getBoundingClientRect().height;
+      if (Math.abs(height - lastHeight) < 0.5) stableFrames += 1;
+      else stableFrames = 0;
+      lastHeight = height;
+      if (performance.now() - started < durationMs && stableFrames < 12) {
+        frame = requestAnimationFrame(anchor);
+      } else {
+        cancel();
+      }
+    };
+    scroller.addEventListener('wheel', cancel, { passive: true });
+    scroller.addEventListener('touchstart', cancel, { passive: true });
+    scroller.addEventListener('pointerdown', cancel);
+    anchor();
   }
 
   private closeSection(name: string): void {
@@ -502,7 +562,7 @@ export class Panel {
     const head = section.querySelector<HTMLButtonElement>('.ps-head');
     const body = section.querySelector<HTMLElement>('.ps-body');
     head?.setAttribute('aria-expanded', 'false');
-    if (body) body.hidden = true;
+    if (body) body.inert = true;
   }
 
   private browserList(
@@ -593,6 +653,12 @@ export class Panel {
               '。晶格常数、键长与 APF 不随重复数改变。'
           : '2×2×2 超胞外框 + 三个中分面；晶格常数、键长与 APF 与 1×1×1 完全一致，只是视野更大。',
       );
+    }
+
+    setText('ui-scale-badge', `${Math.round(state.uiScale * 100)}%`);
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ui-scale]')) {
+      const value = Number(button.dataset.uiScale);
+      button.setAttribute('aria-pressed', String(Math.abs(value - state.uiScale) < 0.001));
     }
 
     const renderState = computeAtomRenderState(

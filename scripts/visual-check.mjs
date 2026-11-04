@@ -1132,6 +1132,28 @@ async function main() {
       window.__CRYSTAL_DEBUG__.showInterstitials(true);
     });
     await settle(page, 900);
+    // The body expansion only advances while frames are produced; under load a
+    // fixed wait can land on the first frame of the 0fr -> 1fr transition.
+    // Poll for the settled layout instead of assuming a wall-clock cadence.
+    await page
+      .waitForFunction(
+        () => {
+          const scroller = document.querySelector('.panel-scroll');
+          const section = document.querySelector('.psec[data-section="sites"]');
+          const body = section ? section.querySelector('.ps-body') : null;
+          if (!scroller || !section || !body) return false;
+          const sectionTop =
+            section.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+          return (
+            section.classList.contains('is-open') &&
+            body.getBoundingClientRect().height > 200 &&
+            scroller.scrollTop > 100 &&
+            sectionTop < 40
+          );
+        },
+        { timeout: 4000 },
+      )
+      .catch(() => undefined);
     const siteState = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getState());
     record(
       '间隙模式默认 OCT 开 / TET 关',
@@ -1157,10 +1179,25 @@ async function main() {
         expanded: section.classList.contains('is-open'),
       };
     });
+    const panelDiag = await page.evaluate(() => {
+      const scroller = document.querySelector('.panel-scroll');
+      const section = document.querySelector('.psec[data-section="sites"]');
+      const body = section?.querySelector('.ps-body');
+      return {
+        grid: document.querySelector('.app-grid')?.className,
+        panelWidth: document.querySelector('#panel')?.getBoundingClientRect().width,
+        scrollHeight: scroller?.scrollHeight,
+        clientHeight: scroller?.clientHeight,
+        overflow: scroller ? getComputedStyle(scroller).overflowY : null,
+        bodyH: body?.getBoundingClientRect().height,
+        rows: body ? getComputedStyle(body).gridTemplateRows : null,
+        inert: body?.inert,
+      };
+    });
     record(
       '进入间隙模式自动展开并滚动到间隙位 section',
       Boolean(panelScroll && panelScroll.expanded && panelScroll.scrollTop > 100 && panelScroll.sectionTop < 40),
-      JSON.stringify(panelScroll),
+      JSON.stringify({ ...panelScroll, ...panelDiag }),
     );
     const toastBox = await page.locator('#toast').boundingBox();
     const railBoxForToast = await page.locator('.status-rail').boundingBox();
@@ -1536,7 +1573,7 @@ async function main() {
     await settle(page, 900);
     await page.evaluate(() => {
       const button = document.querySelector('#qd-color-restore');
-      if (button && !button.hasAttribute('hidden')) button.click();
+      if (button && !button.disabled) button.click();
     });
     await settle(page, 600);
 
@@ -1553,11 +1590,32 @@ async function main() {
         stage: { right: stage.right, bottom: stage.bottom, width: stage.width, height: stage.height },
         dock: { right: dock.right, bottom: dock.bottom, width: dock.width, height: dock.height },
         buttons,
+        sliders: {
+          speed: document.querySelector('#qd-speed')?.value ?? null,
+          radius: document.querySelector('#qd-radius')?.value ?? null,
+        },
+        restore: {
+          disabled: document.querySelector('#qd-color-restore')?.disabled ?? null,
+          count: (document.querySelector('#qd-color-restore-count')?.textContent || '').trim(),
+        },
         status: status ? status.textContent || '' : '',
       };
     });
     const dockIds = dockBox.buttons.map((button) => button.id);
-    const requiredDockIds = ['qd-reset', 'qd-fit', 'qd-color', 'qd-xray', 'qd-ghost', 'qd-atoms', 'qd-cell', 'qd-range', 'qd-bg', 'qd-export'];
+    const requiredDockIds = [
+      'qd-reset',
+      'qd-fit',
+      'qd-rotate',
+      'qd-color',
+      'qd-color-restore',
+      'qd-xray',
+      'qd-ghost',
+      'qd-atoms',
+      'qd-cell',
+      'qd-range',
+      'qd-bg',
+      'qd-export',
+    ];
     record(
       '常驻菜单固定于舞台右下角',
       dockBox.dock.right > dockBox.stage.right - 60 &&
@@ -1567,9 +1625,19 @@ async function main() {
       JSON.stringify({ stage: dockBox.stage, dock: dockBox.dock }),
     );
     record(
-      '常驻菜单包含 10 个常驻按钮',
+      '常驻菜单包含全部常驻按钮',
       requiredDockIds.every((id) => dockIds.includes(id)),
       dockBox.buttons.map((button) => button.id + ':' + button.text).join(' | '),
+    );
+    record(
+      '常驻菜单内嵌速度与半径滑杆',
+      dockBox.sliders.speed !== null && dockBox.sliders.radius !== null,
+      JSON.stringify(dockBox.sliders),
+    );
+    record(
+      '“恢复默认色”常驻且无改动时置灰',
+      dockBox.restore.disabled === true && dockBox.restore.count === '',
+      JSON.stringify(dockBox.restore),
     );
     record(
       '常驻菜单状态栏反映 0.50r / 100% / 实心 63',
@@ -1725,26 +1793,32 @@ async function main() {
     const restoreVisible = await page.evaluate(() => {
       const button = document.querySelector('#qd-color-restore');
       return {
-        hidden: button.hasAttribute('hidden'),
+        disabled: button.disabled,
         count: document.querySelector('#qd-color-restore-count').textContent,
         colors: Object.keys(window.__CRYSTAL_DEBUG__.getState().atomColors || {}),
       };
     });
     record(
-      '逐个颜色被修改后常驻菜单出现“恢复默认色”开关',
-      restoreVisible.hidden === false && restoreVisible.colors.length === 1 && restoreVisible.count.trim() === '1',
+      '逐个颜色被修改后“恢复默认色”启用并显示计数',
+      restoreVisible.disabled === false &&
+        restoreVisible.colors.length === 1 &&
+        restoreVisible.count.trim() === '1',
       JSON.stringify(restoreVisible),
     );
     await page.locator('#qd-color-restore').click();
     await settle(page, 500);
     const restoreDone = await page.evaluate(() => ({
-      hidden: document.querySelector('#qd-color-restore').hasAttribute('hidden'),
+      disabled: document.querySelector('#qd-color-restore').disabled,
+      count: document.querySelector('#qd-color-restore-count').textContent,
       colors: Object.keys(window.__CRYSTAL_DEBUG__.getState().atomColors || {}).length,
       toast: document.querySelector('#toast-text') ? document.querySelector('#toast-text').textContent : '',
     }));
     record(
-      '常驻菜单“恢复默认色”一键清除逐个颜色',
-      restoreDone.hidden === true && restoreDone.colors === 0 && String(restoreDone.toast).includes('默认颜色'),
+      '常驻菜单“恢复默认色”一键清除并重新置灰',
+      restoreDone.disabled === true &&
+        restoreDone.count.trim() === '' &&
+        restoreDone.colors === 0 &&
+        String(restoreDone.toast).includes('默认颜色'),
       JSON.stringify(restoreDone),
     );
 
@@ -1817,13 +1891,152 @@ async function main() {
       return {
         collapsed: grid ? grid.classList.contains('panel-collapsed') : null,
         reopenDisplay: window.getComputedStyle(reopen).display,
+        reopenExpanded: reopen.getAttribute('aria-expanded'),
         panelWidth: document.querySelector('#panel').getBoundingClientRect().width,
       };
     });
     record(
       '展开箭头可恢复实验控制台',
-      unfolded.collapsed === false && unfolded.reopenDisplay === 'none' && unfolded.panelWidth > 200,
+      unfolded.collapsed === false &&
+        unfolded.reopenDisplay !== 'none' &&
+        unfolded.reopenExpanded === 'true' &&
+        unfolded.panelWidth > 200,
       JSON.stringify(unfolded),
+    );
+
+    // The drawer arrow must stay at one height and flip direction, not jump.
+    const arrowOpen = await page.evaluate(() => {
+      const handle = document.querySelector('#panel-reopen');
+      const chevron = handle.querySelector('.panel-handle-chevron');
+      return {
+        top: handle.getBoundingClientRect().top,
+        transform: getComputedStyle(chevron).transform,
+      };
+    });
+    await page.click('#panel-toggle');
+    await settle(page, 620);
+    const arrowClosed = await page.evaluate(() => {
+      const handle = document.querySelector('#panel-reopen');
+      const chevron = handle.querySelector('.panel-handle-chevron');
+      return {
+        top: handle.getBoundingClientRect().top,
+        transform: getComputedStyle(chevron).transform,
+        expanded: handle.getAttribute('aria-expanded'),
+      };
+    });
+    record(
+      '控制台箭头高度固定且方向随开合翻转',
+      Math.abs(arrowOpen.top - arrowClosed.top) < 0.5 &&
+        arrowOpen.transform !== arrowClosed.transform &&
+        arrowClosed.expanded === 'false',
+      JSON.stringify({ open: arrowOpen, closed: arrowClosed }),
+    );
+    await page.click('#panel-reopen');
+    await settle(page, 620);
+
+    // Durable dock controls: rotate switch, speed, radius and colour modes.
+    const setRange = async (selector, value) => {
+      await page.evaluate(
+        ([sel, val]) => {
+          const input = document.querySelector(sel);
+          input.value = String(val);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        },
+        [selector, value],
+      );
+      await settle(page, 260);
+    };
+    const rotateBefore = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getState().autoRotate);
+    await page.click('#qd-rotate');
+    await settle(page, 260);
+    const rotateAfter = await page.evaluate(() => ({
+      autoRotate: window.__CRYSTAL_DEBUG__.getState().autoRotate,
+      checked: document.querySelector('#qd-rotate').getAttribute('aria-checked'),
+    }));
+    record(
+      '常驻菜单自动旋转开关可直接停转',
+      rotateAfter.autoRotate === !rotateBefore &&
+        rotateAfter.checked === String(rotateAfter.autoRotate),
+      JSON.stringify({ before: rotateBefore, after: rotateAfter }),
+    );
+    await page.click('#qd-rotate');
+    await settle(page, 200);
+
+    await setRange('#qd-speed', 1.3);
+    await setRange('#qd-radius', 72);
+    const dockSliders = await page.evaluate(() => ({
+      speed: window.__CRYSTAL_DEBUG__.getState().autoRotateSpeed,
+      radius: window.__CRYSTAL_DEBUG__.getState().atomDisplayRadius,
+      speedOut: document.querySelector('#qd-speed-out').textContent,
+      radiusOut: document.querySelector('#qd-radius-out').textContent,
+    }));
+    record(
+      '常驻菜单可连续调速与无级调显示半径',
+      Math.abs(dockSliders.speed - 1.3) < 1e-6 &&
+        Math.abs(dockSliders.radius - 0.72) < 1e-6 &&
+        dockSliders.speedOut.includes('1.3') &&
+        dockSliders.radiusOut.includes('0.72'),
+      JSON.stringify(dockSliders),
+    );
+
+    await page.click('.qd-modes [data-dock-mode="gold"]');
+    await settle(page, 320);
+    const dockMode = await page.evaluate(() => ({
+      colorMode: window.__CRYSTAL_DEBUG__.getState().colorMode,
+      pressed: document.querySelector('.qd-modes [data-dock-mode="gold"]').getAttribute('aria-pressed'),
+    }));
+    record(
+      '常驻菜单三态配色可直接切换',
+      dockMode.colorMode === 'gold' && dockMode.pressed === 'true',
+      JSON.stringify(dockMode),
+    );
+
+    // restore the defaults used by the rest of the suite
+    await page.click('.qd-modes [data-dock-mode="radial"]');
+    await setRange('#qd-speed', 0.6);
+    await setRange('#qd-radius', 50);
+    await settle(page, 380);
+
+    // Interface scale: persisted, zooms the chrome without touching the scene.
+    const scaleBefore = await page.evaluate(() => ({
+      scale: window.__CRYSTAL_DEBUG__.getState().uiScale,
+      panel: document.querySelector('#panel').getBoundingClientRect().width,
+      canvas: document.querySelector('#crystal-canvas').getBoundingClientRect().width,
+    }));
+    await page.evaluate(() => {
+      document.querySelector('[data-section="interface"] .ps-head').click();
+    });
+    await settle(page, 480);
+    await page.click('[data-ui-scale="1.15"]');
+    await settle(page, 700);
+    const scaleAfter = await page.evaluate(() => ({
+      scale: Number.parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--ui-scale'),
+      ),
+      inline: document.documentElement.style.getPropertyValue('--ui-scale'),
+      stored: localStorage.getItem('crystal-atlas:ui-scale:v1'),
+      panel: document.querySelector('#panel').getBoundingClientRect().width,
+      canvas: document.querySelector('#crystal-canvas').getBoundingClientRect().width,
+    }));
+    record(
+      '设置可缩放界面并保存在本机',
+      Math.abs(scaleAfter.scale - 1.15) < 1e-6 &&
+        scaleAfter.inline === '1.15' &&
+        scaleAfter.stored === '1.15' &&
+        scaleAfter.panel > scaleBefore.panel * 1.1 &&
+        scaleAfter.canvas < scaleBefore.canvas,
+      JSON.stringify({ before: scaleBefore, after: scaleAfter }),
+    );
+    await page.click('[data-ui-scale="1"]');
+    await settle(page, 700);
+    const scaleReset = await page.evaluate(() => ({
+      scale: window.__CRYSTAL_DEBUG__.getState().uiScale,
+      panel: document.querySelector('#panel').getBoundingClientRect().width,
+    }));
+    record(
+      '界面缩放可恢复到 100%',
+      Math.abs(scaleReset.scale - 1) < 1e-6 && Math.abs(scaleReset.panel - scaleBefore.panel) < 2,
+      JSON.stringify(scaleReset),
     );
 
     // 1x1x1 primitive cell (cubic structures only).

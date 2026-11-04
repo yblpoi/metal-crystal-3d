@@ -23,6 +23,8 @@
   --glass-deep: rgba(3, 10, 20, 0.86);
   --panel-w: 380px;
   --header-h: 68px;
+  /* interface scale: 1 = design size, set from the INTERFACE settings */
+  --ui-scale: 1;
   --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "PingFang SC",
     "Hiragino Sans GB", "Segoe UI", "Microsoft YaHei", sans-serif;
@@ -77,8 +79,12 @@ select:focus-visible {
 /* ------------------------------------------------------------------ */
 .app-grid {
   position: relative;
-  height: 100vh;
-  height: 100dvh;
+  /* zoom scales everything (type, controls, the canvas) uniformly; dividing the
+     viewport units keeps the zoomed box exactly filling the window. */
+  width: calc(100dvw / var(--ui-scale));
+  height: calc(100vh / var(--ui-scale));
+  height: calc(100dvh / var(--ui-scale));
+  zoom: var(--ui-scale);
   display: grid;
   grid-template-columns: minmax(0, 1fr) var(--panel-w);
   grid-template-rows: var(--header-h) minmax(0, 1fr);
@@ -954,6 +960,33 @@ select:focus-visible {
   background: linear-gradient(180deg, rgba(5, 17, 32, 0.86), rgba(3, 10, 20, 0.9));
   backdrop-filter: blur(20px);
   box-shadow: -40px 0 90px -70px rgba(92, 225, 255, 0.45);
+  overflow: hidden;
+}
+
+/* The shell keeps the deck's logical width while the grid column animates, so
+   copy never reflows mid-transition: the deck slides away behind a clip. */
+.panel-shell {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: var(--panel-w);
+  transition:
+    transform 0.46s cubic-bezier(0.22, 0.8, 0.24, 1),
+    opacity 0.32s ease;
+}
+
+@media (min-width: 861px) {
+  .panel-shell {
+    animation: panel-in 0.5s cubic-bezier(0.22, 0.8, 0.24, 1);
+  }
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(22px);
+  }
 }
 
 .panel-head {
@@ -1122,6 +1155,22 @@ select:focus-visible {
 }
 
 .ps-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.4s cubic-bezier(0.22, 0.8, 0.24, 1),
+    opacity 0.3s ease;
+}
+
+.psec.is-open .ps-body {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.ps-body-inner {
+  min-height: 0;
+  overflow: hidden;
   padding: 2px 0 12px;
 }
 
@@ -2606,6 +2655,12 @@ input[type="range"]:disabled {
 
   #crystal-canvas,
   .panel,
+  .panel-shell,
+  .ps-body,
+  .app-grid,
+  .panel-handle,
+  .panel-handle-chevron,
+  .panel-handle-text,
   .scard,
   .btn,
   .switch,
@@ -2613,6 +2668,12 @@ input[type="range"]:disabled {
   .mini-knob,
   .mini-switch {
     transition: none !important;
+  }
+
+  .qd-menu,
+  .qd-btn,
+  .panel-shell {
+    animation: none !important;
   }
 }
 
@@ -4389,6 +4450,9 @@ input[type="range"]:disabled {
   align-items: flex-end;
   gap: 6px;
   pointer-events: none;
+  /* Keep the dock inside the stage on short viewports and at large UI scales:
+     the menu then scrolls internally instead of being clipped by .stage. */
+  max-height: calc(100% - (var(--rail-h, 96px) + 42px));
 }
 
 .quick-dock > * {
@@ -4397,54 +4461,244 @@ input[type="range"]:disabled {
 
 /* Compact 2 x 3 corner card: the six always-on view / colour actions. */
 .qd-menu {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(84px, 1fr));
-  gap: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 240px;
   max-width: calc(100vw - 32px);
-  padding: 6px;
+  padding: 9px;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(3, 13, 25, 0.86);
-  backdrop-filter: blur(16px);
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
+  border-radius: 15px;
+  background: rgba(3, 13, 25, 0.88);
+  /* The dock caps its own height, so the menu shrinks and scrolls first. */
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  backdrop-filter: blur(18px);
+  box-shadow:
+    0 22px 52px rgba(0, 0, 0, 0.46),
+    inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  animation: dock-in 0.44s cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+
+.qd-menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.qd-menu::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(92, 225, 255, 0.26);
+}
+
+.qd-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Short stages compact the dock. `zoom` does not change the media-query
+   viewport, so this is toggled from JS by measuring the stage's layout height:
+   at 130% UI scale a 900px window leaves ~620px of stage. */
+.quick-dock.is-compact .qd-menu {
+  gap: 4px;
+  padding: 6px;
+}
+
+.quick-dock.is-compact .qd-row {
+  gap: 4px;
+}
+
+.quick-dock.is-compact .qd-btn {
+  min-height: 38px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+.quick-dock.is-compact .qd-btn .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.quick-dock.is-compact .qd-slider {
+  padding: 7px 9px;
+}
+
+.quick-dock.is-compact .qd-status {
+  display: none;
+}
+
+@keyframes dock-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+}
+
+/* related actions stay together: 2-up rows split by hairline separators */
+.qd-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.qd-sep {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(92, 225, 255, 0.2),
+    transparent
+  );
+}
+
+.qd-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 11px;
+  border: 1px solid rgba(92, 225, 255, 0.14);
+  border-radius: 9px;
+  background: rgba(6, 20, 36, 0.72);
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.qd-slider:hover {
+  border-color: var(--line-strong);
+  background: rgba(92, 225, 255, 0.06);
+}
+
+.qd-slider-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
+}
+
+.qd-slider-label output {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.qd-slider input[type="range"] {
+  width: 100%;
+  margin: 1px 0 0;
+  accent-color: var(--cyan);
+  cursor: pointer;
+}
+
+.qd-modes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.qd-modes button {
+  min-height: 38px;
+  padding: 7px 4px;
+  border: 1px solid rgba(92, 225, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(6, 20, 36, 0.72);
+  color: var(--ink-soft);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    color 0.18s ease;
+}
+
+.qd-modes button:hover {
+  border-color: var(--line-strong);
+  background: rgba(92, 225, 255, 0.08);
+  color: #eafaff;
+}
+
+.qd-modes button[aria-pressed="true"] {
+  border-color: rgba(246, 196, 83, 0.55);
+  background: linear-gradient(
+    180deg,
+    rgba(246, 196, 83, 0.16),
+    rgba(6, 24, 42, 0.85)
+  );
+  color: #ffe6a8;
 }
 
 .qd-btn {
   display: inline-flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 7px;
-  min-height: 36px;
-  padding: 7px 9px;
+  gap: 9px;
+  min-height: 45px;
+  padding: 9px 11px;
   border: 1px solid rgba(92, 225, 255, 0.14);
-  border-radius: 7px;
+  border-radius: 9px;
   background: rgba(6, 20, 36, 0.72);
   color: var(--ink-soft);
   font-family: var(--sans);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1;
   letter-spacing: 0.02em;
   cursor: pointer;
   transition:
-    border-color 0.16s ease,
-    background 0.16s ease,
-    color 0.16s ease;
+    border-color 0.18s ease,
+    background 0.18s ease,
+    color 0.18s ease,
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
 }
 
 .qd-btn .icon {
-  width: 16px;
-  height: 16px;
+  width: 19px;
+  height: 19px;
   color: var(--cyan-soft);
+  flex: none;
+}
+
+.qd-btn:hover {
+  transform: translateY(-1px);
+}
+
+.qd-btn:disabled {
+  opacity: 0.42;
+  cursor: default;
+  transform: none;
+}
+
+.qd-btn:disabled:hover {
+  border-color: rgba(92, 225, 255, 0.14);
+  background: rgba(6, 20, 36, 0.72);
+  color: var(--ink-soft);
+  transform: none;
+}
+
+.qd-btn:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.qd-btn:focus-visible {
+  outline: 1px solid var(--cyan);
+  outline-offset: 2px;
 }
 
 .qd-btn span {
   white-space: nowrap;
 }
 
+.qd-btn em:empty {
+  display: none;
+}
+
 .qd-btn em {
   font-style: normal;
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 10.5px;
   color: var(--gold);
   font-variant-numeric: tabular-nums;
 }
@@ -4469,10 +4723,11 @@ input[type="range"]:disabled {
 
 .qd-swatch {
   display: inline-block;
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.4);
+  flex: none;
 }
 
 .qd-swatch-btn .icon {
@@ -4480,9 +4735,9 @@ input[type="range"]:disabled {
 }
 
 .qd-status {
-  padding: 0 2px;
+  padding: 0 3px;
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 10.5px;
   letter-spacing: 0.04em;
   color: var(--dim);
   font-variant-numeric: tabular-nums;
@@ -4495,7 +4750,7 @@ input[type="range"]:disabled {
   justify-content: center;
 }
 
-.qd-btn.qd-restore-color {
+.qd-btn.qd-restore-color:not(:disabled) {
   border-color: rgba(246, 196, 83, 0.34);
 }
 
@@ -4507,44 +4762,162 @@ input[type="range"]:disabled {
   margin-left: 2px;
 }
 
-/* "reopen the control deck" tab: only visible while the deck is collapsed */
-.panel-reopen {
+/* One always-present drawer handle: it never moves vertically, so the arrow
+   that hides the deck and the arrow that brings it back sit at the same
+   height and simply flip direction as the deck slides. */
+.panel-handle {
   position: absolute;
-  top: 50%;
+  /* Inside .stage, whose right edge is the console's left border: the handle
+     rides that border while the drawer animates and stays at the viewport edge
+     once it is collapsed. The top is fixed, so the arrow never changes height. */
+  top: 16px;
   right: 0;
-  transform: translateY(-50%);
-  z-index: 16;
-  display: none;
+  z-index: 24;
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 12px 10px;
-  border: 1px solid rgba(92, 225, 255, 0.26);
+  gap: 7px;
+  height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
   border-right: 0;
-  border-radius: 9px 0 0 9px;
-  background: rgba(3, 13, 25, 0.9);
+  border-radius: 11px 0 0 11px;
+  background: rgba(4, 15, 28, 0.88);
   backdrop-filter: blur(14px);
   color: var(--ink-soft);
   font-family: var(--sans);
-  font-size: 10px;
-  letter-spacing: 0.1em;
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
   cursor: pointer;
-  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+  box-shadow: -14px 0 34px -22px rgba(92, 225, 255, 0.55);
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
 }
 
-.panel-reopen .icon {
-  transform: rotate(90deg);
+.panel-handle:hover {
+  border-color: rgba(92, 225, 255, 0.6);
+  background: rgba(92, 225, 255, 0.12);
+  color: #fff;
+}
+
+.panel-handle:active {
+  background: rgba(92, 225, 255, 0.18);
+}
+
+.panel-handle:focus-visible {
+  outline: 1px solid var(--cyan);
+  outline-offset: 3px;
+}
+
+.panel-handle-chevron {
   color: var(--cyan-soft);
+  transform: rotate(-90deg);
+  transition: transform 0.46s cubic-bezier(0.22, 0.8, 0.24, 1), color 0.2s ease;
 }
 
-.panel-reopen:hover {
-  border-color: var(--line-strong);
-  background: rgba(92, 225, 255, 0.1);
-  color: #eafaff;
+.app-grid.panel-collapsed .panel-handle-chevron {
+  transform: rotate(90deg);
 }
 
-.app-grid.panel-collapsed .panel-reopen {
-  display: inline-flex;
-  animation: fade-up 0.22s ease both;
+.panel-handle-text {
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition:
+    max-width: 0.3s ease,
+    opacity 0.22s ease;
+}
+
+.app-grid.panel-collapsed .panel-handle-text {
+  max-width: 76px;
+  opacity: 0.82;
+}
+
+.qd-fab {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .panel-handle {
+    display: none;
+  }
+
+  .quick-dock {
+    right: 10px;
+    bottom: calc(var(--rail-h, 72px) + 14px);
+    max-height: none;
+  }
+
+  .qd-fab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 52px;
+    height: 52px;
+    border: 1px solid var(--line-strong);
+    border-radius: 16px;
+    background: rgba(4, 15, 28, 0.92);
+    color: var(--cyan);
+    backdrop-filter: blur(16px);
+    box-shadow:
+      0 18px 40px rgba(0, 0, 0, 0.5),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    cursor: pointer;
+    transition: transform 0.24s cubic-bezier(0.22, 0.8, 0.24, 1),
+      border-color 0.2s ease, background 0.2s ease;
+  }
+
+  .qd-fab:active {
+    transform: scale(0.94);
+  }
+
+  .qd-fab[aria-expanded='true'] {
+    border-color: rgba(246, 196, 83, 0.7);
+    color: var(--gold);
+    background: rgba(246, 196, 83, 0.12);
+  }
+
+  .qd-menu {
+    display: none;
+    width: min(268px, calc(100vw - 20px));
+    max-height: min(66dvh, 560px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    animation: none;
+  }
+
+  .quick-dock.qd-open .qd-menu {
+    display: flex;
+    animation: dock-in 0.3s cubic-bezier(0.22, 0.8, 0.24, 1);
+  }
+
+  #qd-status {
+    display: none;
+  }
+
+  /* Above the stage overlay: the summoned menu should cover the title chips.
+     Doubled class beats the later `.quick-dock { z-index: 14 }` rule. */
+  .quick-dock.quick-dock {
+    z-index: 20;
+  }
+
+  /* Popovers become inline cards: the anchored floating panel would open off
+     screen above a bottom-anchored dock on a phone. */
+  .qd-popover {
+    position: static;
+    width: min(268px, calc(100vw - 20px));
+    max-height: 62dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    margin: 0;
+  }
+
+  .quick-dock:has(.qd-popover:not([hidden])) .qd-menu {
+    display: none;
+  }
 }
 
 /* 1x1x1 / 2x2x2 conventional-cell switch in the STRUCTURE section */
@@ -4813,14 +5186,15 @@ input[type="range"]:disabled {
 
 /* --- collapsible control deck (desktop only) ----------------------- */
 @media (min-width: 861px) {
-  /* Deliberately no grid-template-columns transition here: animating the grid
-     column would resize the canvas every frame (the ResizeObserver fires per
-     step), which made the rotating cube snap/flash when the deck was toggled.
-     The deck itself still slides out via its own transform transition. */
+  /* The column itself animates so the canvas genuinely grows back; the shell
+     keeps its width (see .panel-shell) so nothing reflows while it is clipped.
+     The viewer's ResizeObserver absorbs the per-frame canvas resize. */
+  .app-grid {
+    transition: grid-template-columns 0.46s cubic-bezier(0.22, 0.8, 0.24, 1);
+  }
+
   .panel {
-    transition:
-      transform 0.32s cubic-bezier(0.22, 0.8, 0.24, 1),
-      opacity 0.24s ease;
+    transition: opacity 0.34s ease;
   }
 
   .app-grid.panel-collapsed {
@@ -4828,20 +5202,18 @@ input[type="range"]:disabled {
   }
 
   .app-grid.panel-collapsed .panel {
-    transform: translateX(24px);
     opacity: 0;
-    visibility: hidden;
     pointer-events: none;
-    overflow: hidden;
-    border-left: 0;
   }
 
+  .app-grid.panel-collapsed .panel-shell {
+    transform: translateX(30px);
+    opacity: 0;
+  }
+
+  /* the handle is the single desktop close/reopen affordance */
   .panel-head .panel-close {
-    display: inline-flex;
-  }
-
-  .panel-head .panel-close .icon {
-    transform: rotate(-90deg);
+    display: none;
   }
 
   #panel-toggle[aria-expanded="false"] {
@@ -4988,12 +5360,20 @@ input[type="range"]:disabled {
 /* --- responsive ---------------------------------------------------- */
 @media (max-width: 1260px) {
   .qd-menu {
-    grid-template-columns: repeat(2, minmax(76px, 1fr));
+    width: 222px;
+    gap: 6px;
+    padding: 8px;
   }
 
   .qd-btn {
-    padding: 6px 7px;
-    font-size: 9.5px;
+    min-height: 42px;
+    padding: 8px 9px;
+    font-size: 11px;
+  }
+
+  .qd-btn .icon {
+    width: 17px;
+    height: 17px;
   }
 
   .quick-dock {
@@ -5010,27 +5390,26 @@ input[type="range"]:disabled {
     right: 8px;
   }
 
-  /* three columns so the eleven corner actions stay one thumb-screen tall */
   .qd-menu {
-    grid-template-columns: repeat(3, minmax(64px, 1fr));
-    gap: 4px;
-    padding: 5px;
+    width: min(250px, calc(100vw - 16px));
+    gap: 6px;
+    padding: 8px;
   }
 
   .qd-btn {
-    min-height: 40px;
-    padding: 6px 7px;
-    gap: 5px;
-    font-size: 9.5px;
+    min-height: 44px;
+    padding: 8px 9px;
+    gap: 6px;
+    font-size: 11px;
   }
 
   .qd-btn .icon {
-    width: 15px;
-    height: 15px;
+    width: 17px;
+    height: 17px;
   }
 
   .qd-status {
-    font-size: 8px;
+    font-size: 9.5px;
   }
 
   .qd-popover {

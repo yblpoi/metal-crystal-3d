@@ -300,7 +300,15 @@ export class Viewer {
     const width = this.canvas.clientWidth;
     const height = this.canvas.clientHeight;
     if (width < 2 || height < 2) return;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // The interface scale zooms the layout, so the drawing buffer must grow
+    // with it to stay crisp on the enlarged canvas.
+    const uiScale =
+      Number.parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--ui-scale'),
+      ) || 1;
+    this.renderer.setPixelRatio(
+      Math.min((window.devicePixelRatio || 1) * uiScale, 2.5),
+    );
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.applyViewOffset(width, height);

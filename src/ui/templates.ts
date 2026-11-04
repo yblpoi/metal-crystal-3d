@@ -135,48 +135,78 @@ export function renderShell(root: HTMLElement): void {
         </div>
       </div>
 
-      <button class="panel-reopen" id="panel-reopen" type="button" aria-label="展开实验控制台" title="展开实验控制台" aria-expanded="false" aria-controls="panel">
-        ${icon('chevron', 18)}<span>控制台</span>
-      </button>
-
       <div class="quick-dock" id="quick-dock" role="toolbar" aria-label="常驻快捷控制">
         <div class="qd-popover" id="qd-popover" hidden></div>
-        <div class="qd-menu">
-          <button class="qd-btn" id="qd-reset" type="button" title="重置视角并回到适应视图状态 (R)" aria-label="重置视角">
-            ${icon('recenter', 17)}<span>重置视角</span>
-          </button>
-          <button class="qd-btn" id="qd-fit" type="button" title="按当前可见内容适应视图" aria-label="适应视图">
-            ${icon('fit', 17)}<span>适应视图</span>
-          </button>
-          <button class="qd-btn qd-swatch-btn" id="qd-color" type="button" title="所有小球颜色调整（内外层 / 统一色）" aria-label="所有小球颜色调整" aria-expanded="false" aria-haspopup="true">
-            <span class="qd-swatch" id="qd-swatch"></span><span>小球颜色</span>
-          </button>
-          <button class="qd-btn qd-restore-color" id="qd-color-restore" type="button" title="把所有单独改过颜色的原子恢复为默认配色" aria-label="恢复默认颜色" hidden>
-            ${icon('restore', 17)}<span>恢复默认色 <em id="qd-color-restore-count">0</em></span>
-          </button>
-          <button class="qd-btn" id="qd-xray" type="button" role="switch" aria-checked="false" title="线框透视（晶胞线框穿透球体显示）" aria-label="线框透视">
-            ${icon('layers', 17)}<span>线框透视</span>
-          </button>
-          <button class="qd-btn" id="qd-ghost" type="button" role="switch" aria-checked="false" title="原子透视（整簇半透明，便于看内部间隙）" aria-label="原子透视">
-            ${icon('ghost', 17)}<span>原子透视</span>
-          </button>
-          <button class="qd-btn" id="qd-atoms" type="button" role="switch" aria-checked="true" title="显示 / 隐藏原子" aria-label="显示原子">
-            ${icon('eye', 17)}<span>显示原子</span>
-          </button>
-          <button class="qd-btn" id="qd-cell" type="button" role="switch" aria-checked="true" title="显示 / 隐藏晶胞线框" aria-label="晶胞">
-            ${icon('cube', 17)}<span>晶胞</span>
-          </button>
-          <button class="qd-btn" id="qd-range" type="button" title="显示范围：范围外球体切换为原子透视" aria-label="显示范围" aria-expanded="false" aria-haspopup="true">
-            ${icon('fit', 17)}<span>显示范围</span>
-          </button>
-          <button class="qd-btn" id="qd-bg" type="button" title="背景配色" aria-label="背景" aria-expanded="false" aria-haspopup="true">
-            ${icon('palette', 17)}<span>背景</span>
-          </button>
+        <div class="qd-menu" id="qd-menu">
+          <div class="qd-row">
+            <button class="qd-btn" id="qd-reset" type="button" title="重置视角并回到适应视图状态 (R)" aria-label="重置视角">
+              ${icon('recenter', 17)}<span>重置视角</span>
+            </button>
+            <button class="qd-btn" id="qd-fit" type="button" title="按当前可见内容适应视图" aria-label="适应视图">
+              ${icon('fit', 17)}<span>适应视图</span>
+            </button>
+          </div>
+          <div class="qd-sep" aria-hidden="true"></div>
+          <div class="qd-row">
+            <button class="qd-btn qd-rotate" id="qd-rotate" type="button" role="switch" aria-checked="true" title="自动旋转开关" aria-label="自动旋转">
+              ${icon('rotate', 17)}<span>自动旋转</span>
+            </button>
+            <label class="qd-slider qd-speed" for="qd-speed">
+              <span class="qd-slider-label">速度 <output id="qd-speed-out">0.6×</output></span>
+              <input type="range" id="qd-speed" min="0.2" max="2" step="0.1" value="0.6" aria-label="自动旋转速度">
+            </label>
+          </div>
+          <div class="qd-sep" aria-hidden="true"></div>
+          <div class="qd-row">
+            <button class="qd-btn" id="qd-atoms" type="button" role="switch" aria-checked="true" title="显示 / 隐藏原子" aria-label="显示原子">
+              ${icon('eye', 17)}<span>显示原子</span>
+            </button>
+            <button class="qd-btn" id="qd-cell" type="button" role="switch" aria-checked="true" title="显示 / 隐藏晶胞线框" aria-label="晶胞">
+              ${icon('cube', 17)}<span>晶胞</span>
+            </button>
+          </div>
+          <div class="qd-row">
+            <button class="qd-btn" id="qd-xray" type="button" role="switch" aria-checked="false" title="线框透视（晶胞线框穿透球体显示）" aria-label="线框透视">
+              ${icon('layers', 17)}<span>线框透视</span>
+            </button>
+            <button class="qd-btn" id="qd-ghost" type="button" role="switch" aria-checked="false" title="原子透视（整簇半透明，便于看内部间隙）" aria-label="原子透视">
+              ${icon('ghost', 17)}<span>原子透视</span>
+            </button>
+          </div>
+          <label class="qd-slider" for="qd-radius">
+            <span class="qd-slider-label">显示半径 <output id="qd-radius-out">0.50r</output></span>
+            <input type="range" id="qd-radius" min="50" max="100" step="1" value="50" aria-label="球体显示半径">
+          </label>
+          <div class="qd-row">
+            <button class="qd-btn" id="qd-range" type="button" title="显示范围：范围外球体切换为原子透视" aria-label="显示范围" aria-expanded="false" aria-haspopup="true">
+              ${icon('fit', 17)}<span>显示范围</span>
+            </button>
+            <button class="qd-btn" id="qd-bg" type="button" title="背景配色" aria-label="背景" aria-expanded="false" aria-haspopup="true">
+              ${icon('palette', 17)}<span>背景</span>
+            </button>
+          </div>
+          <div class="qd-sep" aria-hidden="true"></div>
+          <div class="qd-modes" role="group" aria-label="配色模式">
+            <button type="button" data-dock-mode="radial" aria-pressed="true">内外层</button>
+            <button type="button" data-dock-mode="stacking" aria-pressed="false">堆垛层</button>
+            <button type="button" data-dock-mode="gold" aria-pressed="false">纯金</button>
+          </div>
+          <div class="qd-row">
+            <button class="qd-btn qd-swatch-btn" id="qd-color" type="button" title="所有小球颜色调整（内外层 / 统一色）" aria-label="所有小球颜色调整" aria-expanded="false" aria-haspopup="true">
+              <span class="qd-swatch" id="qd-swatch"></span><span>小球颜色</span>
+            </button>
+            <button class="qd-btn qd-restore-color" id="qd-color-restore" type="button" title="没有单独改过颜色的原子时不可用" aria-label="恢复默认颜色" disabled>
+              ${icon('restore', 17)}<span>恢复默认色 <em id="qd-color-restore-count"></em></span>
+            </button>
+          </div>
           <button class="qd-btn qd-wide" id="qd-export" type="button" title="导出 PNG / WebP / GIF" aria-label="导出">
             ${icon('download', 17)}<span>导出 / EXPORT</span>
           </button>
         </div>
         <div class="qd-status" id="qd-status">0.50r · 范围 100% · 实心 63 · 透视 0</div>
+        <button class="qd-fab" id="qd-fab" type="button" aria-label="快捷控制" aria-expanded="false" aria-controls="qd-menu">
+          ${icon('sliders', 20)}
+        </button>
       </div>
 
       <div class="atom-card" id="atom-card" hidden aria-label="选中原子操作">
@@ -214,10 +244,14 @@ export function renderShell(root: HTMLElement): void {
         <h2>无法启动 WebGL</h2>
         <p>当前浏览器或环境没有可用的 WebGL2 上下文。请开启硬件加速，或改用最新版 Chrome / Safari / Edge。</p>
       </div>
+      <button class="panel-handle" id="panel-reopen" type="button" aria-label="收起实验控制台" title="收起 / 展开控制台" aria-expanded="true" aria-controls="panel">
+        ${icon('chevron', 18, 'panel-handle-chevron')}<span class="panel-handle-text">控制台</span>
+      </button>
     </main>
 
     <div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
     <aside class="panel" id="panel" aria-label="晶体控制面板">
+      <div class="panel-shell">
       <div class="panel-head">
         <div>
           <span class="panel-eyebrow">CONTROL DECK</span>
@@ -386,7 +420,7 @@ export function renderShell(root: HTMLElement): void {
             <span class="ps-badge" id="site-badge">O 32 · T 64</span>
             ${icon('chevron', 16, 'ps-chevron')}
           </button>
-          <div class="ps-body" hidden>
+          <div class="ps-body">
             <div class="site-entry">
               <button class="btn-site-primary" id="site-enter-btn" type="button">显示间隙位 · OCT</button>
               <button class="btn-site-secondary" id="site-all-btn" type="button">显示全部位点</button>
@@ -458,7 +492,7 @@ export function renderShell(root: HTMLElement): void {
           </div>
         </section>
 
-        <section class="psec" data-section="edit">
+        <section class="psec is-open" data-section="edit">
           <button class="ps-head" type="button" aria-expanded="true">
             <span class="ps-index">05</span><span class="ps-title">原子编辑 <em>PER-ATOM</em></span>
             <span class="ps-badge quiet" id="edit-badge">—</span>
@@ -513,7 +547,7 @@ export function renderShell(root: HTMLElement): void {
           <button class="ps-head" type="button" aria-expanded="false">
             <span class="ps-index">06</span><span class="ps-title">背景 <em>BACKDROP</em></span>${icon('chevron', 16, 'ps-chevron')}
           </button>
-          <div class="ps-body" hidden>
+          <div class="ps-body">
             <div class="bg-presets" role="group" aria-label="背景预设">
               <button type="button" class="bg-preset is-active" data-bg="deep" aria-pressed="true"><span class="bg-swatch deep"></span><span>深空蓝</span><em>DEEP</em></button>
               <button type="button" class="bg-preset" data-bg="aurora" aria-pressed="false"><span class="bg-swatch aurora"></span><span>极光青</span><em>AURORA</em></button>
@@ -527,10 +561,31 @@ export function renderShell(root: HTMLElement): void {
           </div>
         </section>
 
+        <section class="psec" data-section="interface">
+          <button class="ps-head" type="button" aria-expanded="false">
+            <span class="ps-index">07</span><span class="ps-title">界面 <em>INTERFACE</em></span>
+            <span class="ps-badge quiet" id="ui-scale-badge">100%</span>
+            ${icon('chevron', 16, 'ps-chevron')}
+          </button>
+          <div class="ps-body">
+            <div class="field">
+              <div class="field-label"><span>界面缩放 <em>UI SCALE</em></span><em>控制台 · 顶栏 · 常驻菜单</em></div>
+              <div class="segmented" role="group" aria-label="界面缩放">
+                <button type="button" data-ui-scale="0.9" aria-pressed="false">90%</button>
+                <button type="button" data-ui-scale="1" aria-pressed="true">100%</button>
+                <button type="button" data-ui-scale="1.15" aria-pressed="false">115%</button>
+                <button type="button" data-ui-scale="1.3" aria-pressed="false">130%</button>
+              </div>
+              <p class="micro-note">缩放保存在本机，刷新后保持。常驻菜单默认已放大 25%，此比例会再叠加其上；画布与晶体尺寸不受影响。</p>
+            </div>
+          </div>
+        </section>
+
         <footer class="panel-footer">
           <span>DISPLAY &amp; EXPORT</span>
           <span>r = 1 HARD SPHERES</span>
         </footer>
+      </div>
       </div>
     </aside>
 

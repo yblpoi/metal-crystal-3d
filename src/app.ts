@@ -97,6 +97,7 @@ export interface DebugState {
   allAtomColor: string | null;
   hcpCOverA: number;
   background: AppState['background'];
+  uiScale: number;
 }
 
 export interface ScreenBounds {
@@ -1049,6 +1050,34 @@ export function bootstrap(): void {
     stage.style.setProperty('--grid-line', theme.grid);
   }
 
+  let appliedUiScale = 0;
+  // The dock has a fixed visual size, so a taller UI scale (or a short window)
+  // leaves it less stage to live in. Measured from layout height, this switches
+  // the dock to its compact metrics before it would need to scroll.
+  function syncDockDensity(): void {
+    const dock = document.getElementById('quick-dock');
+    const stage = document.getElementById('stage');
+    if (!dock || !stage) return;
+    dock.classList.toggle('is-compact', stage.clientHeight < 720);
+  }
+
+  function applyUiScale(scale: number): void {
+    if (scale === appliedUiScale) return;
+    appliedUiScale = scale;
+    document.documentElement.style.setProperty('--ui-scale', String(scale));
+    // `zoom` changes the canvas' CSS box but fires no window resize, so the
+    // line layers (they size their strokes in CSS pixels) and the projected
+    // labels have to be refreshed by hand once the new layout is committed.
+    window.requestAnimationFrame(() => {
+      syncDockDensity();
+      const width = Math.max(1, canvas.clientWidth);
+      const height = Math.max(1, canvas.clientHeight);
+      cellLayer.setResolution(width, height);
+      shellLayer.setResolution(width, height);
+      refreshLabels(store.state);
+    });
+  }
+
   function sync(state: Readonly<AppState>): void {
     applyScene(state);
     panel?.update(state);
@@ -1099,6 +1128,7 @@ export function bootstrap(): void {
   }
 
   store.subscribe((state, patch) => {
+    applyUiScale(state.uiScale);
     if (patch.structure) rebuildScene(reducedMotion ? 0 : 450);
     if (patch.cellRepeat !== undefined) rebuildScene(reducedMotion ? 0 : 350);
     if (patch.hcpCOverA !== undefined && state.structure === 'hcp') {
@@ -1362,14 +1392,38 @@ export function bootstrap(): void {
     setToggle('qd-ghost', state.ghostAtoms);
     setToggle('qd-atoms', state.showAtoms);
     setToggle('qd-cell', state.showCell);
-    // Quick "restore default colour" switch: it only appears while per-atom
-    // colour overrides exist, so it never takes dock space needlessly.
+    setToggle('qd-rotate', state.autoRotate);
+    const dockSpeed = byIdOptional<HTMLInputElement>('qd-speed');
+    if (dockSpeed && document.activeElement !== dockSpeed) {
+      dockSpeed.value = String(state.autoRotateSpeed);
+    }
+    const dockSpeedOut = byIdOptional<HTMLElement>('qd-speed-out');
+    if (dockSpeedOut) dockSpeedOut.textContent = `${state.autoRotateSpeed.toFixed(1)}×`;
+    const dockRadius = byIdOptional<HTMLInputElement>('qd-radius');
+    const dockRadiusPercent = Math.round(state.atomDisplayRadius * 100);
+    if (dockRadius && document.activeElement !== dockRadius) {
+      dockRadius.value = String(dockRadiusPercent);
+    }
+    const dockRadiusOut = byIdOptional<HTMLElement>('qd-radius-out');
+    if (dockRadiusOut) dockRadiusOut.textContent = `${state.atomDisplayRadius.toFixed(2)}r`;
+    for (const button of dockEl.querySelectorAll<HTMLButtonElement>('[data-dock-mode]')) {
+      const active = button.dataset.dockMode === state.colorMode;
+      button.setAttribute('aria-pressed', String(active));
+      button.classList.toggle('is-on', active);
+    }
+    // Quick "restore default colour" switch: always resident so its place in
+    // the dock is learnable, but disabled and dimmed while nothing has been
+    // recoloured, so it never invites a click that would do nothing.
     const restoreColor = byIdOptional<HTMLButtonElement>('qd-color-restore');
     if (restoreColor) {
       const edited = Object.keys(state.atomColors).length;
-      restoreColor.hidden = edited === 0;
+      restoreColor.disabled = edited === 0;
+      restoreColor.title =
+        edited === 0
+          ? '没有单独改过颜色的原子'
+          : `把 ${edited} 个单独改过颜色的原子恢复为默认配色`;
       const restoreCount = byIdOptional<HTMLElement>('qd-color-restore-count');
-      if (restoreCount) restoreCount.textContent = String(edited);
+      if (restoreCount) restoreCount.textContent = edited === 0 ? '' : String(edited);
     }
     const swatch = byIdOptional('qd-swatch');
     if (swatch) {
@@ -1470,6 +1524,23 @@ export function bootstrap(): void {
   // persistent corner menu wiring ------------------------------------
   byIdOptional('qd-reset')?.addEventListener('click', resetView);
   byIdOptional('qd-fit')?.addEventListener('click', fitView);
+  byIdOptional('qd-rotate')?.addEventListener('click', () => {
+    store.set({ autoRotate: !store.state.autoRotate });
+  });
+  byIdOptional<HTMLInputElement>('qd-speed')?.addEventListener('input', (event) => {
+    store.set({ autoRotateSpeed: Number((event.target as HTMLInputElement).value) });
+  });
+  byIdOptional<HTMLInputElement>('qd-radius')?.addEventListener('input', (event) => {
+    store.set({ atomDisplayRadius: Number((event.target as HTMLInputElement).value) / 100 });
+  });
+  for (const button of dockEl.querySelectorAll<HTMLButtonElement>('[data-dock-mode]')) {
+    button.addEventListener('click', () => {
+      store.set({
+        colorMode: button.dataset.dockMode as AppState['colorMode'],
+        allAtomColor: null,
+      });
+    });
+  }
   byIdOptional('qd-color')?.addEventListener('click', () => openDockPopover('color'));
   byIdOptional('qd-range')?.addEventListener('click', () => openDockPopover('range'));
   byIdOptional('qd-bg')?.addEventListener('click', () => openDockPopover('bg'));
@@ -1492,10 +1563,37 @@ export function bootstrap(): void {
     store.set({ showAtoms: !store.state.showAtoms });
   });
   document.addEventListener('pointerdown', (event) => {
-    if (!dockPopover) return;
     const target = event.target as Node | null;
+    if (dockEl.classList.contains('qd-open') && !(target && dockEl.contains(target))) {
+      setDockOpen(false);
+    }
+    if (!dockPopover) return;
     if (target && dockEl.contains(target)) return;
     closeDockPopover();
+  });
+
+  // mobile quick-nav: one thumb-sized FAB opens the same grouped menu
+  const dockFab = byIdOptional<HTMLButtonElement>('qd-fab');
+  const setDockOpen = (open: boolean): void => {
+    dockEl.classList.toggle('qd-open', open);
+    dockFab?.setAttribute('aria-expanded', String(open));
+  };
+  dockFab?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setDockOpen(!dockEl.classList.contains('qd-open'));
+  });
+  window
+    .matchMedia('(min-width: 861px)')
+    .addEventListener('change', (event) => {
+      if (event.matches) setDockOpen(false);
+    });
+  // On a phone the menu is a sheet: collapse it after a direct action so the
+  // crystal is visible again (popover triggers keep it open for their editor).
+  dockEl.addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement | null)?.closest('.qd-btn');
+    if (!button) return;
+    if (button.id === 'qd-color' || button.id === 'qd-range' || button.id === 'qd-bg') return;
+    if (window.matchMedia('(max-width: 860px)').matches) setDockOpen(false);
   });
 
   // floating atom inspector wiring ----------------------------------
@@ -1745,6 +1843,7 @@ export function bootstrap(): void {
     store.set({ autoRotate: !store.state.autoRotate });
   });
   window.addEventListener('resize', () => {
+    syncDockDensity();
     cellLayer.setResolution(canvas.clientWidth, canvas.clientHeight);
     shellLayer.setResolution(canvas.clientWidth, canvas.clientHeight);
     hud.update(store.state, currentModel);
@@ -1792,6 +1891,7 @@ export function bootstrap(): void {
         allAtomColor: state.allAtomColor,
         hcpCOverA: state.hcpCOverA,
         background: state.background,
+        uiScale: state.uiScale,
       };
     },
     setStructure: (id) => {
@@ -2199,6 +2299,7 @@ export function bootstrap(): void {
   window.__CRYSTAL_READY__ = false;
   window.__CRYSTAL_DEBUG__ = debug;
 
+  applyUiScale(store.state.uiScale);
   rebuildScene(0);
   sync(store.state);
   viewer.start(() => {

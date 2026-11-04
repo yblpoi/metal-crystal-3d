@@ -20,6 +20,12 @@ export type BackgroundPreset = 'deep' | 'aurora' | 'gold' | 'custom';
 export const MIN_ATOM_SIZE = 0.4;
 export const MAX_ATOM_SIZE = 1.6;
 
+/** Interface scale: the control deck, top bar and persistent dock follow it. */
+export const UI_SCALE_MIN = 0.85;
+export const UI_SCALE_MAX = 1.4;
+export const DEFAULT_UI_SCALE = 1;
+export const UI_SCALE_STEPS = [0.9, 1, 1.15, 1.3] as const;
+
 export interface AppState {
   structure: StructureId;
   colorMode: ColorMode;
@@ -69,11 +75,14 @@ export interface AppState {
   hcpCOverA: number;
   /** Cubic cluster size: one conventional cell (1×1×1) or the 2×2×2 supercell. */
   cellRepeat: CellRepeat;
+  /** Interface scale shared by the deck, top bar and dock (persisted). */
+  uiScale: number;
 }
 
 const STORAGE_KEY = 'crystal-atlas:atom-colors:v1';
 const STORAGE_KEY_HIDDEN = 'crystal-atlas:atom-hidden:v1';
 const STORAGE_KEY_SIZES = 'crystal-atlas:atom-sizes:v1';
+const STORAGE_KEY_UI_SCALE = 'crystal-atlas:ui-scale:v1';
 export const RADIAL_SPLIT = 0.6;
 /** Default layer palette: gold shell around an ancient-bronze core. */
 export const DEFAULT_COLOR_INNER = '#B87333';
@@ -91,6 +100,17 @@ export function normalizeHex(value: string): string {
 export function clampAtomSize(value: number): number {
   if (!Number.isFinite(value)) return 1;
   return Math.min(MAX_ATOM_SIZE, Math.max(MIN_ATOM_SIZE, value));
+}
+
+export function clampUiScale(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) return DEFAULT_UI_SCALE;
+  return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, numeric));
+}
+
+function loadUiScale(): number {
+  const parsed = readStorage(STORAGE_KEY_UI_SCALE);
+  return typeof parsed === 'number' ? clampUiScale(parsed) : DEFAULT_UI_SCALE;
 }
 
 function readStorage(key: string): unknown {
@@ -189,6 +209,7 @@ export function createDefaultState(): AppState {
     atomSizes: loadAtomSizes(),
     hcpCOverA: HCP_C_OVER_A,
     cellRepeat: DEFAULT_CELL_REPEAT,
+    uiScale: loadUiScale(),
   };
 }
 
@@ -221,6 +242,9 @@ export class AppStore {
     if (patch.atomColors) writeStorage(STORAGE_KEY, nextState.atomColors);
     if (patch.atomHidden) writeStorage(STORAGE_KEY_HIDDEN, nextState.atomHidden);
     if (patch.atomSizes) writeStorage(STORAGE_KEY_SIZES, nextState.atomSizes);
+    if (patch.uiScale !== undefined) {
+      writeStorage(STORAGE_KEY_UI_SCALE, clampUiScale(nextState.uiScale));
+    }
     this.current = nextState;
     for (const listener of this.listeners) listener(nextState, patch);
   }
