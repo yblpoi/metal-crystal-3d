@@ -1,5 +1,5 @@
 import type { CrystalModel, StructureId } from '../crystal/types';
-import { computeAtomVisibility } from '../crystal/visibility';
+import { computeAtomRenderState } from '../crystal/visibility';
 import type { AppState } from '../state';
 import {
   cellDescriptor,
@@ -57,9 +57,19 @@ export class Hud {
     ].join('');
 
     const cellText = meta.id === 'hcp' ? 'A-B-A · 3 层' : cellDescriptor(meta.id);
-    const visibility = computeAtomVisibility(model.atoms, state.displayMode, state.displayRange);
+    const render = computeAtomRenderState(
+      model.atoms,
+      state.displayMode,
+      state.displayRange,
+      state.atomHidden,
+      state.ghostAtoms,
+    );
     byId('stage-chips').innerHTML = [
-      `<span class="stage-chip" style="font-variant-numeric: tabular-nums"><b>${visibility.count}</b> / ${meta.clusterAtomCount} 原子</span>`,
+      state.ghostAtoms
+        ? `<span class="stage-chip" style="font-variant-numeric: tabular-nums"><b>${render.baseCount}</b> / ${meta.clusterAtomCount} 原子 · 原子透视</span>`
+        : `<span class="stage-chip" style="font-variant-numeric: tabular-nums"><b>${render.solidCount}</b> / ${meta.clusterAtomCount} 原子${
+            render.xrayCount > 0 ? ` · <em>透视 ${render.xrayCount}</em>` : ''
+          }</span>`,
       `<span class="stage-chip">${cellText}</span>`,
       `<span class="stage-chip scale-chip">显示 ${state.atomDisplayRadius.toFixed(2)}r · 数据 r = 1</span>`,
       `<span class="stage-chip mobile-chip"><em>CN</em><b>${meta.coordinationNumber}</b></span>`,
@@ -82,6 +92,9 @@ export class Hud {
     byId('legend-atom').textContent = `显示 ${state.atomDisplayRadius.toFixed(2)}r`;
     byId('legend-o').textContent = `r/R ${meta.radiusRatioOctahedral.toFixed(3)}`;
     byId('legend-t').textContent = `r/R ${meta.radiusRatioTetrahedral.toFixed(3)}`;
+    const ghostRow = byId<HTMLElement>('legend-ghost-row');
+    ghostRow.hidden = render.xrayCount === 0;
+    byId('legend-ghost').textContent = `范围外 ${render.xrayCount}`;
     const oRow = byId<HTMLElement>('legend-o-row');
     const tRow = byId<HTMLElement>('legend-t-row');
     oRow.style.opacity = state.showO ? '1' : '0.38';
@@ -91,11 +104,11 @@ export class Hud {
     const mobile = window.matchMedia('(max-width: 860px)').matches;
     if (mobile) {
       hint.innerHTML = state.editMode
-        ? '<span class="hint-key">点击</span> 原子改色 <span class="hint-sep"></span> 单指旋转'
+        ? '<span class="hint-key">单击</span> 原子改色/隐藏/大小 <span class="hint-sep"></span> 单指旋转'
         : '<span class="hint-key">单指</span> 旋转 <span class="hint-sep"></span> <span class="hint-key">双指</span> 缩放';
     } else if (state.editMode) {
       hint.innerHTML =
-        '<span class="hint-key">点击</span> 原子改色 <span class="hint-sep"></span><span class="hint-key">拖动</span> 旋转 <span class="hint-sep"></span><span class="hint-key">Esc</span> 取消';
+        '<span class="hint-key">单击</span> 选中原子 <span class="hint-sep"></span><span class="hint-key">Ctrl/Shift</span> 多选 <span class="hint-sep"></span><span class="hint-key">拖动</span> 旋转';
     } else if (state.showO || state.showT) {
       hint.innerHTML =
         '<span class="hint-key">点击</span> 间隙球看配位 <span class="hint-sep"></span><span class="hint-key">拖动</span> 旋转 <span class="hint-sep"></span><span class="hint-key">1 / 2 / 3</span> 切换';
@@ -106,6 +119,14 @@ export class Hud {
 
     if (state.structure === 'hcp') {
       byId('loading-sub').textContent = 'HCP · 57 ATOMS · A-B-A';
+    }
+
+    // Publish the rail height so the quick dock / atom card can float above it
+    // without hard-coded offsets that break when the legend grows.
+    const rail = document.querySelector<HTMLElement>('.status-rail');
+    if (rail) {
+      const height = rail.getBoundingClientRect().height;
+      if (height > 0) this.stage.style.setProperty('--rail-h', `${Math.round(height)}px`);
     }
   }
 

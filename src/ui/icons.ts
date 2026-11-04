@@ -8,7 +8,15 @@ type IconName =
   | 'chevron'
   | 'cube'
   | 'layers'
-  | 'info';
+  | 'info'
+  | 'fit'
+  | 'eye'
+  | 'eye-off'
+  | 'ghost'
+  | 'palette'
+  | 'sliders'
+  | 'dots'
+  | 'restore';
 
 const paths: Record<IconName, string> = {
   logo: '<path d="M12 2.6 20.2 7v10L12 21.4 3.8 17V7L12 2.6Z" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M12 2.6v8.2m0 0 8.2-3.8M12 10.8 3.8 7M12 10.8v10.6" fill="none" stroke="currentColor" stroke-width="1" opacity=".55"/><circle cx="12" cy="10.8" r="1.5" fill="#F6C453"/>',
@@ -29,6 +37,20 @@ const paths: Record<IconName, string> = {
   layers:
     '<path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Z" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="m4 12 8 4.5 8-4.5M4 16.5 12 21l8-4.5" fill="none" stroke="currentColor" stroke-width="1.3" opacity=".7"/>',
   info: '<circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M12 10.5v6M12 7.5v.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>',
+  fit: '<path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.4" fill="none" stroke="currentColor" stroke-width="1.3"/>',
+  eye: '<path d="M2.8 12S6.2 6 12 6s9.2 6 9.2 6-3.4 6-9.2 6-9.2-6-9.2-6Z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="1.3"/>',
+  'eye-off':
+    '<path d="M4 4l16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M9.6 5.6A10.7 10.7 0 0 1 12 5.4c5.8 0 9.2 6 9.2 6a16.4 16.4 0 0 1-3 3.5M6.3 7.2A16 16 0 0 0 2.8 11.4s3.4 6 9.2 6a10 10 0 0 0 4-.9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
+  ghost:
+    '<path d="M12 3.2a6.4 6.4 0 0 0-6.4 6.4v10.2l2.6-2 2.5 2 1.3-1.6 1.3 1.6 2.5-2 2.6 2V9.6A6.4 6.4 0 0 0 12 3.2Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="9.8" cy="9.8" r="1" fill="currentColor"/><circle cx="14.2" cy="9.8" r="1" fill="currentColor"/>',
+  palette:
+    '<path d="M12 3.2a8.8 8.8 0 1 0 0 17.6c1.2 0 1.9-.9 1.9-1.9 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.9 1.9-1.9h1.4a4.6 4.6 0 0 0 4.6-4.6c0-3.7-3.9-6.8-8.8-6.8Z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7.6" cy="10.2" r="1.1" fill="currentColor"/><circle cx="12" cy="7.6" r="1.1" fill="currentColor"/><circle cx="16.4" cy="10.2" r="1.1" fill="currentColor"/>',
+  sliders:
+    '<path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="9" cy="7" r="2" fill="#0A1A2C" stroke="currentColor" stroke-width="1.3"/><circle cx="15" cy="12" r="2" fill="#0A1A2C" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="17" r="2" fill="#0A1A2C" stroke="currentColor" stroke-width="1.3"/>',
+  dots:
+    '<circle cx="7" cy="7" r="2.3" fill="currentColor" opacity=".85"/><circle cx="17" cy="7" r="2.3" fill="currentColor" opacity=".85"/><circle cx="12" cy="12" r="2.3" fill="currentColor" opacity=".85"/><circle cx="7" cy="17" r="2.3" fill="currentColor" opacity=".85"/><circle cx="17" cy="17" r="2.3" fill="currentColor" opacity=".85"/>',
+  restore:
+    '<path d="M4.5 9.5A8 8 0 1 1 4 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4.5 4.8v4.9h4.9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
 };
 
 export function icon(name: IconName, size = 16, className = ''): string {

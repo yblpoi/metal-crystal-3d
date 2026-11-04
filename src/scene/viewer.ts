@@ -352,9 +352,25 @@ export class Viewer {
     );
   }
 
+  /**
+   * "重置视角" now also lands in the fitted state: the canonical orbit
+   * direction plus the distance that fits the currently visible content.
+   */
+  resetViewToFit(radius: number, duration = 450): void {
+    const ms = this.reducedMotion ? Math.min(duration, 120) : duration;
+    const distance = this.contentFitDistance(radius);
+    this.animateTo(
+      this.canonicalPosition(new Vector3(0, 0, 0), distance),
+      new Vector3(0, 0, 0),
+      ms,
+    );
+  }
+
   fitView(radius: number, duration = 450): void {
     const ms = this.reducedMotion ? Math.min(duration, 120) : duration;
-    const distance = this.fitDistance(radius, this.effectiveMargin());
+    // Same formula as resetViewToFit(): "适应视图" and "重置视角" must land on
+    // one identical distance so a reset really is the fitted state.
+    const distance = this.contentFitDistance(radius);
     const target = this.controls.target.clone();
     const direction = new Vector3().subVectors(this.camera.position, target).normalize();
     const end = target.clone().addScaledVector(direction, distance);

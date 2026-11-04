@@ -3,13 +3,14 @@ import type {
   AtomKind,
   BasisAtom,
   CrystalModel,
+  InterstitialSite,
   SiteSeed,
   SiteType,
   StructureId,
   StructureMeta,
   Vec3,
 } from './types';
-import { analyzeSite, getShellSpec, length } from './neighbors';
+import { analyzeSite, getShellSpec, length, type ShellSpec } from './neighbors';
 
 /**
  * Ideal hard-sphere model, normalised so that r = 1 and the nearest-neighbour
@@ -31,6 +32,83 @@ export const FCC_OCTAHEDRAL_RATIO = SQRT2 - 1; // 0.41421356237309515
 export const FCC_TETRAHEDRAL_RATIO = Math.sqrt(3 / 2) - 1; // 0.22474487139158894
 export const BCC_OCTAHEDRAL_RATIO = 2 / SQRT3 - 1; // 0.15470053837925168
 export const BCC_TETRAHEDRAL_RATIO = Math.sqrt(5 / 3) - 1; // 0.2909944487358056
+
+/* ------------------------------------------------------------------ */
+/* scientific parameter sandbox (HCP c/a)                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Hard-sphere HCP keeps r = 1 and nearest-neighbour contact. With the basal
+ * lattice constant fixed by in-plane contact (a = 2r = 2), the interlayer
+ * distance is sqrt(a^2/3 + c^2/4). It equals 2 only at the ideal c/a, so any
+ * c/a BELOW sqrt(8/3) would push interlayer neighbours closer than 2r, i.e.
+ * overlap the hard spheres. The scientifically valid interval is therefore
+ * [sqrt(8/3), 1.90]: stretching c opens a gap between layers, never overlap.
+ */
+export const HCP_MIN_C_OVER_A = HCP_C_OVER_A;
+export const HCP_MAX_C_OVER_A = 1.9;
+
+export function clampHcpCOverA(value: number): number {
+  if (!Number.isFinite(value)) return HCP_C_OVER_A;
+  return Math.min(HCP_MAX_C_OVER_A, Math.max(HCP_MIN_C_OVER_A, value));
+}
+
+export interface CrystalParams {
+  /** HCP c/a ratio; cubic structures ignore it. */
+  hcpCOverA?: number;
+}
+
+export interface HcpLattice {
+  a: number;
+  c: number;
+  cOverA: number;
+  vectors: [Vec3, Vec3, Vec3];
+  /** Atomic packing fraction at this c/a, with r = 1 fixed. */
+  apf: number;
+  /** Geometric O/T hard-sphere radius ratios at this c/a. */
+  radiusRatioOctahedral: number;
+  radiusRatioTetrahedral: number;
+  shellSpecs: Record<SiteType, ShellSpec>;
+}
+
+/**
+ * HCP lattice derived from c/a with r = 1 hard spheres.
+ *
+ * a stays the basal contact distance (2r = 2). The six O neighbours of an
+ * octahedral site all sit at sqrt(a^2/3 + c^2/16); the four T neighbours split
+ * into one vertical distance 3c/8 and three at sqrt(a^2/3 + c^2/64). Those
+ * three closed forms are what the parameter sandbox uses instead of the
+ * ideal-model lookup table, so the coordination topology is unchanged while
+ * every distance/ratio is recomputed from the new c/a.
+ */
+export function hcpLattice(ratioInput: number = HCP_C_OVER_A): HcpLattice {
+  const cOverA = clampHcpCOverA(ratioInput);
+  const a = HCP_A;
+  const c = a * cOverA;
+  const oDistance = Math.sqrt((a * a) / 3 + (c * c) / 16);
+  const tVertical = (3 * c) / 8;
+  const tSlanted = Math.sqrt((a * a) / 3 + (c * c) / 64);
+  const tMin = Math.min(tVertical, tSlanted);
+  // Primitive hexagonal cell: 2 atoms, V = a^2 * c * sin(60 deg).
+  const cellVolume = a * a * c * Math.sin(Math.PI / 3);
+  return {
+    a,
+    c,
+    cOverA,
+    vectors: [
+      { x: a, y: 0, z: 0 },
+      { x: -a / 2, y: (SQRT3 * a) / 2, z: 0 },
+      { x: 0, y: 0, z: c },
+    ],
+    apf: (2 * (4 / 3) * Math.PI) / cellVolume,
+    radiusRatioOctahedral: Math.max(0, oDistance - 1),
+    radiusRatioTetrahedral: Math.max(0, tMin - 1),
+    shellSpecs: {
+      O: { distances: [oDistance], coordination: 6 },
+      T: { distances: [tVertical, tSlanted].sort((x, y) => x - y), coordination: 4 },
+    },
+  };
+}
 
 const FCC_BASIS: BasisAtom[] = [
   { label: 'corner', fractional: { x: 0, y: 0, z: 0 } },
@@ -311,15 +389,16 @@ function bboxCenter(raws: RawAtom[]): Vec3 {
  * afterwards (the B-layer offset makes the bbox centre differ from the
  * hexagonal axis, which is expected).
  */
-function buildHcpRawAtoms(): RawAtom[] {
-  const { a1, a2 } = HCP_LATTICE_VECTORS;
+function buildHcpRawAtoms(a: number = HCP_A, c: number = HCP_C): RawAtom[] {
+  const a1: Vec3 = { x: a, y: 0, z: 0 };
+  const a2: Vec3 = { x: -a / 2, y: (SQRT3 * a) / 2, z: 0 };
   const raws: RawAtom[] = [];
 
   for (let k = 0; k <= 2; k++) {
     const isB = k % 2 === 1;
     const du = isB ? 1 / 3 : 0;
     const dv = isB ? 2 / 3 : 0;
-    const z = (k * HCP_C) / 2;
+    const z = (k * c) / 2;
 
     for (let i = -2; i <= 2; i++) {
       for (let j = -2; j <= 2; j++) {
@@ -372,13 +451,13 @@ function nearestToBboxCentre(raws: RawAtom[]): RawAtom {
 }
 
 /** Translation applied to the whole HCP cluster (atoms and interstitial sites). */
-function hcpClusterShift(): Vec3 {
-  return nearestToBboxCentre(buildHcpRawAtoms()).position;
+function hcpClusterShift(a: number = HCP_A, c: number = HCP_C): Vec3 {
+  return nearestToBboxCentre(buildHcpRawAtoms(a, c)).position;
 }
 
-function buildHcpAtoms(): Atom[] {
-  const raws = buildHcpRawAtoms();
-  const shift = hcpClusterShift();
+function buildHcpAtoms(a: number = HCP_A, c: number = HCP_C): Atom[] {
+  const raws = buildHcpRawAtoms(a, c);
+  const shift = hcpClusterShift(a, c);
   return finalizeAtoms(
     'hcp',
     raws.map((raw) => ({
@@ -538,11 +617,12 @@ function buildCubicSites(id: 'fcc' | 'bcc', cells: number): SiteSeed[] {
  * fractional lattice coordinates including the site offset) and the 3 atom
  * layers (0 <= z/c <= 1), then deduplicated by fractional key.
  */
-function buildHcpSites(): SiteSeed[] {
-  const { a1, a2 } = HCP_LATTICE_VECTORS;
+function buildHcpSites(a: number = HCP_A, c: number = HCP_C): SiteSeed[] {
+  const a1: Vec3 = { x: a, y: 0, z: 0 };
+  const a2: Vec3 = { x: -a / 2, y: (SQRT3 * a) / 2, z: 0 };
   // Same translation as the atoms: a site must not drift relative to its
   // surrounding cluster when the display origin changes.
-  const shift = hcpClusterShift();
+  const shift = hcpClusterShift(a, c);
   const map = new Map<string, SiteSeed>();
 
   for (let k = -1; k <= 3; k++) {
@@ -568,7 +648,7 @@ function buildHcpSites(): SiteSeed[] {
             position: {
               x: a1.x * u + a2.x * v - shift.x,
               y: a1.y * u + a2.y * v - shift.y,
-              z: w * HCP_C - shift.z,
+              z: w * c - shift.z,
             },
           });
         }
@@ -621,41 +701,57 @@ export function enumerateCellSites(id: StructureId, cells = 1): { O: number; T: 
 /* public builder                                                      */
 /* ------------------------------------------------------------------ */
 
-function buildAtoms(id: StructureId): Atom[] {
-  switch (id) {
-    case 'fcc':
-      return buildFccAtoms();
-    case 'bcc':
-      return buildBccAtoms();
-    case 'hcp':
-      return buildHcpAtoms();
-    default: {
-      const never: never = id;
-      throw new Error(`unknown structure: ${String(never)}`);
-    }
+export function buildCrystal(id: StructureId, params: CrystalParams = {}): CrystalModel {
+  if (id === 'hcp') {
+    const lattice = hcpLattice(params.hcpCOverA);
+    const meta: StructureMeta = {
+      ...STRUCTURE_META.hcp,
+      lattice: {
+        kind: 'hexagonal',
+        a: lattice.a,
+        c: lattice.c,
+        cOverA: lattice.cOverA,
+        vectors: lattice.vectors,
+      },
+      apf: lattice.apf,
+      radiusRatioOctahedral: lattice.radiusRatioOctahedral,
+      radiusRatioTetrahedral: lattice.radiusRatioTetrahedral,
+    };
+    const atoms = buildHcpAtoms(lattice.a, lattice.c);
+    const seeds = buildHcpSites(lattice.a, lattice.c);
+    const sites = seeds.map((seed) =>
+      analyzeSite(
+        seed,
+        atoms,
+        lattice.shellSpecs[seed.type],
+        seed.type === 'O' ? lattice.radiusRatioOctahedral : lattice.radiusRatioTetrahedral,
+      ),
+    );
+    return finishModel(meta, atoms, sites);
   }
-}
 
-function buildSiteSeeds(id: StructureId): SiteSeed[] {
-  return id === 'hcp' ? buildHcpSites() : buildCubicSites(id, 2);
-}
-
-export function buildCrystal(id: StructureId): CrystalModel {
   const meta = STRUCTURE_META[id];
-  const atoms = buildAtoms(id);
-  const seeds = buildSiteSeeds(id);
+  const atoms = id === 'fcc' ? buildFccAtoms() : buildBccAtoms();
+  const seeds = buildCubicSites(id, 2);
+  const sites = seeds.map((seed) =>
+    analyzeSite(
+      seed,
+      atoms,
+      getShellSpec(id, seed.type),
+      seed.type === 'O' ? meta.radiusRatioOctahedral : meta.radiusRatioTetrahedral,
+    ),
+  );
+  return finishModel(meta, atoms, sites);
+}
 
-  const sites = seeds.map((seed) => {
-    const spec = getShellSpec(id, seed.type);
-    const theoretical =
-      seed.type === 'O' ? meta.radiusRatioOctahedral : meta.radiusRatioTetrahedral;
-    return analyzeSite(seed, atoms, spec, theoretical);
-  });
-
+function finishModel(
+  meta: StructureMeta,
+  atoms: Atom[],
+  sites: InterstitialSite[],
+): CrystalModel {
   const boundingRadius = atoms.reduce((max, atom) => Math.max(max, length(atom.position)), 0);
-
   return {
-    id,
+    id: meta.id,
     atoms,
     sites,
     meta,

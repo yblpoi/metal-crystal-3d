@@ -1,18 +1,27 @@
 import type { CrystalModel, InterstitialSite, SiteType, StructureId } from '../crystal/types';
 import {
+  computeAtomRenderState,
   computeAtomVisibility,
   isSiteVisibleInDisplay,
   siteNeighborsFullyVisible,
   siteVisibleCoordination,
   type DisplayMode,
 } from '../crystal/visibility';
+import {
+  HCP_C_OVER_A,
+  HCP_MAX_C_OVER_A,
+  HCP_MIN_C_OVER_A,
+  clampHcpCOverA,
+} from '../crystal/structures';
 import { resolveBackground } from '../background';
 import { filterSites } from '../site-filter';
 import {
   RADIAL_SPLIT,
+  atomEditCount,
   resolveAtomColor,
+  resolveAtomSize,
   resolveCellStyle,
-  selectedAtom as pickSelectedAtom,
+  selectedAtoms as pickSelectedAtoms,
   type AppState,
   type AppStore,
   type BackgroundPreset,
@@ -48,8 +57,14 @@ export interface PanelActions {
   setFollowSites: (enabled: boolean) => void;
   resetDisplay: () => void;
   setAtomColor: (id: string, hex: string) => void;
-  restoreSelectedAtom: () => void;
-  resetAllAtomColors: () => void;
+  setAtomColors: (ids: string[], hex: string) => void;
+  setAtomSizes: (ids: string[], size: number) => void;
+  hideAtoms: (ids: string[]) => void;
+  showAllHiddenAtoms: () => void;
+  restoreAtomEdits: (ids: string[]) => void;
+  resetAllAtomEdits: () => void;
+  setHcpCOverA: (ratio: number, announce?: boolean) => void;
+  clearAtomSelection: () => void;
 }
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -79,16 +94,19 @@ export class Panel {
   private readonly actions: PanelActions;
   private readonly getModel: () => CrystalModel;
   private readonly panel = byId<HTMLElement>('panel');
+  private readonly grid = document.querySelector<HTMLElement>('.app-grid');
   private readonly scroll = document.querySelector<HTMLElement>('.panel-scroll');
   private readonly backdrop = byId<HTMLElement>('sheet-backdrop');
   private readonly settingsButton = byId<HTMLButtonElement>('mobile-settings');
+  private readonly panelToggle = byId<HTMLButtonElement>('panel-toggle');
   private readonly media = window.matchMedia('(max-width: 860px)');
   private readonly sections = new Map<string, HTMLElement>();
-  private lastSelectedAtomId: string | null = null;
+  private lastSelectionKey = '';
   private diagramKey = '';
   private sitesWereActive = false;
   private autoOpenedSites = false;
   private sheetOpen = false;
+  private collapsed = false;
 
   constructor(store: AppStore, actions: PanelActions, getModel: () => CrystalModel) {
     this.store = store;
@@ -121,17 +139,17 @@ export class Panel {
     for (const button of document.querySelectorAll<HTMLButtonElement>('[data-mode]')) {
       button.addEventListener('click', () => {
         const mode = button.dataset.mode as ColorMode;
-        store.set({ colorMode: mode });
+        store.set({ colorMode: mode, allAtomColor: null });
       });
     }
 
     byId<HTMLInputElement>('color-inner').addEventListener('input', (event) => {
       const value = (event.target as HTMLInputElement).value.toUpperCase();
-      store.set({ colorInner: value });
+      store.set({ colorInner: value, allAtomColor: null });
     });
     byId<HTMLInputElement>('color-outer').addEventListener('input', (event) => {
       const value = (event.target as HTMLInputElement).value.toUpperCase();
-      store.set({ colorOuter: value });
+      store.set({ colorOuter: value, allAtomColor: null });
     });
 
     byId<HTMLInputElement>('toggle-autorotate').addEventListener('change', (event) => {
@@ -264,20 +282,59 @@ export class Panel {
       const enabled = (event.target as HTMLInputElement).checked;
       store.set({
         editMode: enabled,
-        selectedAtomId: enabled ? store.state.selectedAtomId : null,
+        selectedAtomIds: enabled ? store.state.selectedAtomIds : [],
       });
     });
+    const selectedIds = (): string[] => this.store.state.selectedAtomIds.slice();
     byId<HTMLInputElement>('atom-color').addEventListener('input', (event) => {
-      const id = store.state.selectedAtomId;
-      if (!id) return;
-      this.actions.setAtomColor(id, (event.target as HTMLInputElement).value.toUpperCase());
+      const ids = selectedIds();
+      if (ids.length === 0) return;
+      this.actions.setAtomColors(ids, (event.target as HTMLInputElement).value.toUpperCase());
     });
+    byId<HTMLInputElement>('atom-size').addEventListener('input', (event) => {
+      const ids = selectedIds();
+      if (ids.length === 0) return;
+      this.actions.setAtomSizes(ids, Number((event.target as HTMLInputElement).value) / 100);
+    });
+    byId<HTMLButtonElement>('atom-hide').addEventListener('click', () => {
+      this.actions.hideAtoms(selectedIds());
+    });
+    byId<HTMLButtonElement>('atom-show-hidden').addEventListener('click', () =>
+      this.actions.showAllHiddenAtoms(),
+    );
     byId<HTMLButtonElement>('atom-restore').addEventListener('click', () =>
-      this.actions.restoreSelectedAtom(),
+      this.actions.restoreAtomEdits(selectedIds()),
     );
     byId<HTMLButtonElement>('reset-all-colors').addEventListener('click', () =>
-      this.actions.resetAllAtomColors(),
+      this.actions.resetAllAtomEdits(),
     );
+
+    // Scientific HCP c/a sandbox (see crystal/structures#hcpLattice).
+    const hcpSlider = byId<HTMLInputElement>('hcp-ca');
+    hcpSlider.min = (HCP_MIN_C_OVER_A * 100).toFixed(1);
+    hcpSlider.max = (HCP_MAX_C_OVER_A * 100).toFixed(1);
+    hcpSlider.addEventListener('input', () => {
+      this.actions.setHcpCOverA(Number(hcpSlider.value) / 100);
+    });
+    byId<HTMLButtonElement>('hcp-ca-reset').addEventListener('click', () =>
+      this.actions.setHcpCOverA(HCP_C_OVER_A),
+    );
+    // Keyboard twin of the drag slider: non-numeric input reverts to the ideal
+    // ratio, out-of-range input is clamped to the hard-sphere valid interval.
+    const hcpNumber = byId<HTMLInputElement>('hcp-ca-number');
+    hcpNumber.min = HCP_MIN_C_OVER_A.toFixed(3);
+    hcpNumber.max = HCP_MAX_C_OVER_A.toFixed(3);
+    hcpNumber.addEventListener('change', () => {
+      const requested = Number(hcpNumber.value);
+      if (!Number.isFinite(requested)) {
+        hcpNumber.value = HCP_C_OVER_A.toFixed(3);
+        return;
+      }
+      // Pass the raw value so the app can clamp *and* explain the scientific
+      // interval it applied; only the displayed value is pre-clamped here.
+      this.actions.setHcpCOverA(requested, true);
+      hcpNumber.value = clampHcpCOverA(requested).toFixed(3);
+    });
 
     for (const button of document.querySelectorAll<HTMLButtonElement>('[data-bg]')) {
       button.addEventListener('click', () => {
@@ -291,15 +348,20 @@ export class Panel {
       });
     });
 
-    byId<HTMLButtonElement>('panel-close').addEventListener('click', () => this.closeSheet());
+    byId<HTMLButtonElement>('panel-close').addEventListener('click', () => this.togglePanel());
   }
 
   private bindSheet(): void {
     this.settingsButton.addEventListener('click', () => this.toggleSheet());
+    this.panelToggle.addEventListener('click', () => this.togglePanel());
     this.backdrop.addEventListener('click', () => this.closeSheet());
     this.media.addEventListener('change', () => {
-      if (!this.media.matches) this.closeSheet();
-      else this.panel.inert = !this.sheetOpen;
+      if (!this.media.matches) {
+        this.closeSheet();
+        this.setCollapsed(false);
+      } else {
+        this.panel.inert = !this.sheetOpen;
+      }
     });
     this.panel.inert = this.media.matches;
   }
@@ -310,6 +372,29 @@ export class Panel {
 
   isSheetOpen(): boolean {
     return this.sheetOpen;
+  }
+
+  isCollapsed(): boolean {
+    return this.collapsed;
+  }
+
+  /** Collapse/expand the control deck. Mobile keeps the sheet behaviour. */
+  setCollapsed(collapsed: boolean): void {
+    if (this.media.matches) return;
+    this.collapsed = collapsed;
+    this.grid?.classList.toggle('panel-collapsed', collapsed);
+    this.panelToggle.setAttribute('aria-expanded', String(!collapsed));
+    this.panel.setAttribute('aria-hidden', String(collapsed));
+    this.panel.inert = collapsed;
+    window.setTimeout(() => window.dispatchEvent(new Event('resize')), 320);
+  }
+
+  togglePanel(): void {
+    if (this.media.matches) {
+      this.toggleSheet();
+      return;
+    }
+    this.setCollapsed(!this.collapsed);
   }
 
   openSheet(): void {
@@ -329,7 +414,7 @@ export class Panel {
     const wasOpen = this.sheetOpen;
     this.sheetOpen = false;
     this.panel.classList.remove('is-open');
-    this.panel.inert = this.media.matches;
+    this.panel.inert = this.media.matches ? true : this.collapsed;
     this.panel.removeAttribute('role');
     this.panel.removeAttribute('aria-modal');
     this.backdrop.hidden = true;
@@ -437,6 +522,13 @@ export class Panel {
     setText('data-metals', structureExamples(state.structure));
     setText('data-cellnote', cellNote(state.structure));
 
+    const renderState = computeAtomRenderState(
+      model.atoms,
+      state.displayMode,
+      state.displayRange,
+      state.atomHidden,
+      state.ghostAtoms,
+    );
     const atomVisibility = computeAtomVisibility(model.atoms, state.displayMode, state.displayRange);
     const radius = byId<HTMLInputElement>('display-radius');
     radius.value = String(Math.round(state.atomDisplayRadius * 100));
@@ -447,8 +539,9 @@ export class Panel {
     const displayRange = byId<HTMLInputElement>('display-range');
     displayRange.value = String(Math.round(state.displayRange * 100));
     setText('display-range-out', `${Math.round(state.displayRange * 100)}%`);
-    setText('display-visible-count', String(atomVisibility.count));
+    setText('display-visible-count', String(renderState.solidCount));
     setText('display-total-count', String(meta.clusterAtomCount));
+    setText('display-xray-count', String(renderState.xrayCount));
 
     const shellButton = byId<HTMLButtonElement>('display-shell-btn');
     const shellCn = atomVisibility.shell.coordination;
@@ -471,11 +564,37 @@ export class Panel {
     setText(
       'display-badge',
       state.displayMode === 'shell'
-        ? `配位壳 · CN ${shellCn} · 显示 ${atomVisibility.count}/${meta.clusterAtomCount}`
+        ? `配位壳 · CN ${shellCn} · 实心 ${renderState.solidCount}/${meta.clusterAtomCount}`
         : state.displayMode === 'all'
           ? `显示全部 · ${Math.round(state.atomDisplayRadius * 100)}% r`
-          : `缩球示意 · 显示 ${atomVisibility.count}/${meta.clusterAtomCount}`,
+          : `缩球示意 · 实心 ${renderState.solidCount}/${meta.clusterAtomCount}${
+              renderState.xrayCount > 0 ? ` · 透视 ${renderState.xrayCount}` : ''
+            }`,
     );
+
+    // HCP c/a scientific sandbox (the only free structural parameter).
+    const isHcp = state.structure === 'hcp';
+    byId<HTMLElement>('hcp-param-controls').hidden = !isHcp;
+    byId<HTMLElement>('cubic-param-lock').hidden = isHcp;
+    if (isHcp) {
+      const ratio = meta.lattice.cOverA ?? HCP_C_OVER_A;
+      const hcpSlider = byId<HTMLInputElement>('hcp-ca');
+      hcpSlider.value = (ratio * 100).toFixed(1);
+      const hcpNumber = byId<HTMLInputElement>('hcp-ca-number');
+      if (document.activeElement !== hcpNumber) hcpNumber.value = ratio.toFixed(3);
+      setText('hcp-ca-out', ratio.toFixed(3));
+      setText('param-ar', fmt(meta.lattice.a, 4));
+      setText('param-cr', fmt(meta.lattice.c ?? 0, 4));
+      setText('param-apf', pct(meta.apf));
+      const interlayer =
+        meta.lattice.c === null
+          ? 0
+          : Math.sqrt(meta.lattice.a ** 2 / 3 + meta.lattice.c ** 2 / 4);
+      setText(
+        'param-note',
+        `硬球模型要求 c/a ≥ √(8/3) ≈ 1.633：更小的 c 会让相邻层原子重叠，因此下限被锁定。当前层间最近邻距离 ${interlayer.toFixed(3)}（同层 2.000），O/T 间隙 r/R = ${meta.radiusRatioOctahedral.toFixed(3)} / ${meta.radiusRatioTetrahedral.toFixed(3)}。r = 1 始终不变。`,
+      );
+    }
 
     for (const button of document.querySelectorAll<HTMLButtonElement>('[data-mode]')) {
       button.setAttribute('aria-pressed', String(button.dataset.mode === state.colorMode));
@@ -483,7 +602,10 @@ export class Panel {
     const modeText = COLOR_MODE_TEXT[state.colorMode];
     setText('inner-label', modeText.inner);
     setText('outer-label', modeText.outer);
-    setText('color-mode-note', modeText.note);
+    setText(
+      'color-mode-note',
+      state.allAtomColor ? `统一色 ${state.allAtomColor} · 已覆盖` : modeText.note,
+    );
 
     const innerInput = byId<HTMLInputElement>('color-inner');
     innerInput.value = state.colorInner;
@@ -609,37 +731,76 @@ export class Panel {
 
     const edit = byId<HTMLInputElement>('toggle-edit');
     edit.checked = state.editMode;
-    const atom = pickSelectedAtom(state, model.atoms);
+    const selected = pickSelectedAtoms(state, model.atoms);
+    const primary = selected[0] ?? null;
     const atomEmpty = byId<HTMLElement>('atom-empty');
     const atomContent = byId<HTMLElement>('atom-content');
     const atomColor = byId<HTMLInputElement>('atom-color');
+    const atomSize = byId<HTMLInputElement>('atom-size');
     const restore = byId<HTMLButtonElement>('atom-restore');
+    const hide = byId<HTMLButtonElement>('atom-hide');
+    const showHidden = byId<HTMLButtonElement>('atom-show-hidden');
     const resetAll = byId<HTMLButtonElement>('reset-all-colors');
     const editBadge = byId<HTMLElement>('edit-badge');
-    if (atom) {
+    const hiddenCount = Object.keys(state.atomHidden).length;
+    const hiddenNote = byId<HTMLElement>('atom-hidden-note');
+    if (primary) {
       atomEmpty.hidden = true;
       atomContent.hidden = false;
-      setText('atom-kind', atomKindLabel(atom.kind));
-      setText('atom-struct', `${meta.abbreviation} · 通用金属 M · ${atom.kind}`);
-      setText('atom-layer', atomLayerLabel(atom, state.structure));
-      setText('atom-frac', fracText(atom.fractional.x, atom.fractional.y, atom.fractional.z));
-      setText('atom-layer-detail', `${atomLayerLabel(atom, state.structure)} · ${atom.kind}`);
-      const color = resolveAtomColor(atom, meta, state);
+      setText('atom-selected-count', String(selected.length));
+      setText(
+        'atom-kind',
+        selected.length > 1 ? `${selected.length} 个原子` : atomKindLabel(primary.kind),
+      );
+      setText('atom-struct', `${meta.abbreviation} · 通用金属 M · ${primary.kind}`);
+      setText('atom-layer', atomLayerLabel(primary, state.structure));
+      setText(
+        'atom-frac',
+        selected.length > 1
+          ? '多选 · 混合晶位'
+          : fracText(primary.fractional.x, primary.fractional.y, primary.fractional.z),
+      );
+      setText(
+        'atom-layer-detail',
+        selected.length > 1
+          ? `${selected.length} 个晶位`
+          : `${atomLayerLabel(primary, state.structure)} · ${primary.kind}`,
+      );
+      const color = resolveAtomColor(primary, meta, state);
       atomColor.value = color;
       atomColor.disabled = false;
       setText('atom-color-hex', color);
-      restore.disabled = !state.atomColors[atom.id];
-      editBadge.textContent = `${meta.abbreviation} · ${atomKindLabel(atom.kind)}`;
+      const sizeValue = resolveAtomSize(state, primary.id);
+      atomSize.value = String(Math.round(sizeValue * 100));
+      setText('atom-size-out', `${Math.round(sizeValue * 100)}%`);
+      atomSize.disabled = false;
+      restore.disabled = !selected.some(
+        (atom) => state.atomColors[atom.id] || state.atomSizes[atom.id] || state.atomHidden[atom.id],
+      );
+      hide.disabled = false;
+      editBadge.textContent =
+        selected.length > 1
+          ? `${selected.length} 个原子`
+          : `${meta.abbreviation} · ${atomKindLabel(primary.kind)}`;
       editBadge.classList.remove('quiet');
     } else {
       atomEmpty.hidden = false;
       atomContent.hidden = true;
       atomColor.disabled = true;
+      atomSize.disabled = true;
       restore.disabled = true;
+      hide.disabled = true;
       editBadge.textContent = '—';
       editBadge.classList.add('quiet');
     }
-    resetAll.disabled = Object.keys(state.atomColors).length === 0;
+    showHidden.disabled = hiddenCount === 0;
+    showHidden.textContent =
+      hiddenCount > 0 ? `显示全部隐藏 (${hiddenCount})` : '显示全部隐藏';
+    hiddenNote.hidden = hiddenCount === 0;
+    if (hiddenCount > 0) {
+      hiddenNote.textContent = `已隐藏 ${hiddenCount} 个原子；可用「显示全部隐藏」或右下角浮动卡片恢复。`;
+    }
+    resetAll.disabled = atomEditCount(state) === 0;
 
     for (const button of document.querySelectorAll<HTMLButtonElement>('[data-bg]')) {
       button.setAttribute('aria-pressed', String(button.dataset.bg === state.background));
@@ -650,11 +811,12 @@ export class Panel {
     bgInput.value = theme.c;
     setText('bg-hex', theme.c.toUpperCase());
 
-    if (state.selectedAtomId && state.selectedAtomId !== this.lastSelectedAtomId) {
+    const selectionKey = state.selectedAtomIds.join('|');
+    if (selectionKey && selectionKey !== this.lastSelectionKey) {
       if (this.isMobile() && !this.sheetOpen) this.openSheet();
       this.openSection('edit', true);
     }
-    this.lastSelectedAtomId = state.selectedAtomId;
+    this.lastSelectionKey = selectionKey;
   }
 
   private updateBrowser(state: Readonly<AppState>): void {

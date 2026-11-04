@@ -19,11 +19,7 @@ import type { Atom, CrystalModel } from '../crystal/types';
 /** One shared unit sphere for every structure and every rebuild. */
 const ATOM_GEOMETRY = new SphereGeometry(1, 48, 32);
 
-/**
- * Ring stroke widths are in texture texels. The sprite covers ~2.5 world units
- * over 256 texels, so 9.5 tx lands at roughly 3 CSS px at the default framing;
- * 7.5 tx is the ~2 px hover ring.
- */
+/** Ring stroke widths are in texture texels. The sprite covers ~2.5 world units. */
 function createRingTexture(accent: string, lineWidth: number): CanvasTexture {
   const size = 256;
   const canvas = document.createElement('canvas');
@@ -61,34 +57,45 @@ function createRingTexture(accent: string, lineWidth: number): CanvasTexture {
 }
 
 /**
- * Instanced hard spheres. The underlying atom radius is always exactly 1 in
- * crystal units; the instance scale is a display-only factor so the same unit
- * geometry can be shrunk without touching the crystallographic data.
+ * Instanced hard spheres with two parallel layers:
  *
- * Selection and hover are screen-aligned target rings (canvas sprites), not
- * polyhedral cages: a cuboctahedron would be the correct CN-12 shape for FCC,
- * and any hand-built cage would misrepresent the local coordination.
+ * - a solid metal layer for interactive atoms;
+ * - an atom-xray ghost layer for atoms outside the display range (the
+ *   "被隐藏的球体使用原子透视" requirement) and for the global atom-xray mode.
+ *
+ * Both layers keep one slot per Atom, so colours never shift when the display
+ * range changes. The underlying crystallographic radius is always r = 1; the
+ * instance scale is a display-only factor (global display radius × per-atom
+ * size), which keeps the data untouched.
+ *
+ * Selection is a pool of screen-aligned target rings (one per selected atom),
+ * not polyhedral cages: a cuboctahedron would be the correct CN-12 shape and
+ * any hand-built cage would misrepresent the local coordination.
  */
 export class AtomLayer {
   readonly group = new Group();
   private readonly metalMaterial: MeshPhysicalMaterial;
   private readonly ghostMaterial: ShaderMaterial;
-  private readonly selectionSprite: Sprite;
+  private readonly selectionMaterial: SpriteMaterial;
   private readonly hoverSprite: Sprite;
   private readonly shellSprite: Sprite;
+  private readonly selectionSprites: Sprite[] = [];
   private readonly selectedTexture: CanvasTexture;
   private readonly hoverTexture: CanvasTexture;
   private readonly color = new Color();
   private readonly matrix = new Matrix4();
-  private currentMesh: InstancedMesh | null = null;
+  private solidMesh: InstancedMesh | null = null;
+  private ghostMesh: InstancedMesh | null = null;
   private atoms: Atom[] = [];
-  private visible: boolean[] = [];
+  private solid: boolean[] = [];
+  private xray: boolean[] = [];
+  private sizes: number[] = [];
   private displayRadius = 1;
   private shellCenterIndex: number | null = null;
+  private selectionIndices: number[] = [];
   private colorKey = '';
-  private ghost = false;
   private exportMode = false;
-  private exportSelectionWasVisible = false;
+  private exportSelectionWasVisible: boolean[] = [];
   private exportShellWasVisible = false;
 
   constructor() {
@@ -148,106 +155,118 @@ export class AtomLayer {
 
     this.selectedTexture = createRingTexture('rgba(150, 244, 255, 0.98)', 9.5);
     this.hoverTexture = createRingTexture('rgba(196, 239, 250, 0.72)', 7.5);
-    this.selectionSprite = new Sprite(
-      new SpriteMaterial({
-        map: this.selectedTexture,
-        transparent: true,
-        depthTest: false,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    );
+    this.selectionMaterial = new SpriteMaterial({
+      map: this.selectedTexture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
     this.hoverSprite = new Sprite(
       new SpriteMaterial({
         map: this.hoverTexture,
         transparent: true,
-        opacity: 0.55,
         depthTest: false,
         depthWrite: false,
         toneMapped: false,
+        opacity: 0.55,
       }),
     );
     this.shellSprite = new Sprite(
       new SpriteMaterial({
         map: this.selectedTexture,
         transparent: true,
-        opacity: 0.78,
         depthTest: false,
         depthWrite: false,
         toneMapped: false,
+        opacity: 0.78,
       }),
     );
-    this.selectionSprite.scale.setScalar(2.5);
     this.hoverSprite.scale.setScalar(2.12);
     this.shellSprite.scale.setScalar(2.4);
-    this.selectionSprite.renderOrder = 7;
     this.hoverSprite.renderOrder = 6;
     this.shellSprite.renderOrder = 6;
-    this.selectionSprite.visible = false;
     this.hoverSprite.visible = false;
     this.shellSprite.visible = false;
-    this.group.add(this.hoverSprite, this.shellSprite, this.selectionSprite);
+    this.group.add(this.hoverSprite, this.shellSprite);
   }
 
   build(model: CrystalModel): void {
     this.atoms = model.atoms;
     this.colorKey = '';
-    const material = this.ghost ? this.ghostMaterial : this.metalMaterial;
-    const mesh = new InstancedMesh(ATOM_GEOMETRY, material, this.atoms.length);
-    mesh.instanceMatrix.setUsage(DynamicDrawUsage);
-    mesh.frustumCulled = false;
-    mesh.renderOrder = this.ghost ? 3 : 0;
-    this.visible = this.atoms.map(() => true);
-    this.replaceMesh(mesh);
+    this.solid = this.atoms.map(() => true);
+    this.xray = this.atoms.map(() => false);
+    this.sizes = this.atoms.map(() => 1);
+
+    const solidMesh = this.createMesh(this.metalMaterial, 0);
+    const ghostMesh = this.createMesh(this.ghostMaterial, 3);
+    this.replaceMeshes(solidMesh, ghostMesh);
     this.writeMatrices();
-    this.setSelected(null);
+    this.setSelection([]);
     this.setHover(null);
     this.setShellCenter(null);
   }
 
+  private createMesh(material: MeshPhysicalMaterial | ShaderMaterial, order: number): InstancedMesh {
+    const mesh = new InstancedMesh(ATOM_GEOMETRY, material, this.atoms.length);
+    mesh.instanceMatrix.setUsage(DynamicDrawUsage);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = order;
+    return mesh;
+  }
+
   /**
-   * Display-only update: hidden atoms keep their slot in the InstancedMesh (so
-   * setColorAt indices stay aligned with CrystalModel.atoms) but receive a zero
-   * scale. Visible atoms all receive exactly the same scale.
+   * Display-only update. `solid` atoms render with the metal material; `xray`
+   * atoms render with the transparent atom-xray material. Both arrays are
+   * indexed exactly like CrystalModel.atoms.
    */
-  setDisplay(visible: boolean[], radius: number): void {
-    if (visible.length !== this.atoms.length) return;
-    this.visible = visible.slice();
+  setDisplay(
+    solid: boolean[],
+    xray: boolean[],
+    radius: number,
+    sizes: number[] = [],
+  ): void {
+    if (solid.length !== this.atoms.length || xray.length !== this.atoms.length) return;
+    this.solid = solid.slice();
+    this.xray = xray.slice();
+    this.sizes =
+      sizes.length === this.atoms.length ? sizes.slice() : this.atoms.map(() => 1);
     this.displayRadius = Math.min(1, Math.max(0.5, radius));
     this.writeMatrices();
-    this.updateRingScale();
+    this.syncSelectionSprites();
+    this.updateHoverVisibility();
+    this.updateShellVisibility();
+  }
 
-    const selected = this.selectionSprite.userData.atomIndex as number | undefined;
-    if (selected !== undefined && !this.isVisibleIndex(selected)) {
-      this.selectionSprite.visible = false;
-    }
-    const hovered = this.hoverSprite.userData.atomIndex as number | undefined;
-    if (hovered !== undefined && !this.isVisibleIndex(hovered)) {
-      this.hoverSprite.visible = false;
-    }
-    if (this.shellCenterIndex !== null && !this.isVisibleIndex(this.shellCenterIndex)) {
-      this.shellSprite.visible = false;
-    }
+  private atomScale(index: number): number {
+    const multiplier = this.sizes[index] ?? 1;
+    return this.displayRadius * Math.min(1.6, Math.max(0.4, multiplier));
   }
 
   private writeMatrices(): void {
-    const mesh = this.currentMesh;
-    if (!mesh) return;
+    const solidMesh = this.solidMesh;
+    const ghostMesh = this.ghostMesh;
+    if (!solidMesh || !ghostMesh) return;
     for (let i = 0; i < this.atoms.length; i++) {
       const atom = this.atoms[i];
-      const scale = this.visible[i] ? this.displayRadius : 0;
-      this.matrix.makeScale(scale, scale, scale);
+      const scale = this.atomScale(i);
+      const solidScale = this.solid[i] ? scale : 0;
+      const ghostScale = this.xray[i] ? scale : 0;
+      this.matrix.makeScale(solidScale, solidScale, solidScale);
       this.matrix.setPosition(atom.position.x, atom.position.y, atom.position.z);
-      mesh.setMatrixAt(i, this.matrix);
+      solidMesh.setMatrixAt(i, this.matrix);
+      this.matrix.makeScale(ghostScale, ghostScale, ghostScale);
+      this.matrix.setPosition(atom.position.x, atom.position.y, atom.position.z);
+      ghostMesh.setMatrixAt(i, this.matrix);
     }
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.count = this.atoms.length;
+    solidMesh.instanceMatrix.needsUpdate = true;
+    ghostMesh.instanceMatrix.needsUpdate = true;
+    solidMesh.count = this.atoms.length;
+    ghostMesh.count = this.atoms.length;
   }
 
-  private updateRingScale(): void {
-    this.selectionSprite.scale.setScalar(2.4 * this.displayRadius);
-    this.hoverSprite.scale.setScalar(2.08 * this.displayRadius);
-    this.shellSprite.scale.setScalar(2.4 * this.displayRadius);
+  private setRingScale(sprite: Sprite, index: number, base: number): void {
+    sprite.scale.setScalar(base * this.atomScale(index));
   }
 
   /**
@@ -257,14 +276,23 @@ export class AtomLayer {
    */
   setShellCenter(index: number | null): void {
     this.shellCenterIndex = index;
+    this.updateShellVisibility();
+  }
+
+  private updateShellVisibility(): void {
+    const index = this.shellCenterIndex;
     const atom = index === null ? null : this.atoms[index];
-    if (!atom || !this.isVisibleIndex(index!)) {
+    if (
+      !atom ||
+      !(this.solid[index!] || this.xray[index!]) ||
+      this.exportMode
+    ) {
       this.shellSprite.visible = false;
       return;
     }
     this.shellSprite.position.set(atom.position.x, atom.position.y, atom.position.z);
-    this.updateRingScale();
-    this.shellSprite.visible = !this.exportMode;
+    this.setRingScale(this.shellSprite, index!, 2.4);
+    this.shellSprite.visible = true;
   }
 
   getShellRingInfo(): { visible: boolean; index: number | null; scale: number } {
@@ -275,13 +303,25 @@ export class AtomLayer {
     };
   }
 
+  /** Solid, interactive atom (kept for the existing debug/acceptance API). */
   isVisibleIndex(index: number): boolean {
-    return this.visible[index] === true;
+    return this.solid[index] === true;
+  }
+
+  /** Rendered either solid or as an atom-xray ghost. */
+  isRenderedIndex(index: number): boolean {
+    return this.solid[index] === true || this.xray[index] === true;
   }
 
   getVisibleCount(): number {
     let count = 0;
-    for (const value of this.visible) if (value) count++;
+    for (const value of this.solid) if (value) count++;
+    return count;
+  }
+
+  getXrayCount(): number {
+    let count = 0;
+    for (const value of this.xray) if (value) count++;
     return count;
   }
 
@@ -289,17 +329,34 @@ export class AtomLayer {
     return this.displayRadius;
   }
 
-  private replaceMesh(next: InstancedMesh): void {
-    if (this.currentMesh) {
-      this.group.remove(this.currentMesh);
-      this.currentMesh.dispose();
+  getDisplaySize(index: number): number {
+    return this.atomScale(index);
+  }
+
+  private replaceMeshes(solidMesh: InstancedMesh, ghostMesh: InstancedMesh): void {
+    if (this.solidMesh) {
+      this.group.remove(this.solidMesh);
+      this.solidMesh.dispose();
     }
-    this.currentMesh = next;
-    this.group.add(next);
+    if (this.ghostMesh) {
+      this.group.remove(this.ghostMesh);
+      this.ghostMesh.dispose();
+    }
+    this.solidMesh = solidMesh;
+    this.ghostMesh = ghostMesh;
+    this.group.add(solidMesh, ghostMesh);
+  }
+
+  /** Pick targets, solid layer first so solid atoms win tie hits. */
+  get pickTargets(): InstancedMesh[] {
+    const targets: InstancedMesh[] = [];
+    if (this.solidMesh) targets.push(this.solidMesh);
+    if (this.ghostMesh) targets.push(this.ghostMesh);
+    return targets;
   }
 
   get instancedMesh(): InstancedMesh | null {
-    return this.currentMesh;
+    return this.solidMesh;
   }
 
   get atomCount(): number {
@@ -307,7 +364,7 @@ export class AtomLayer {
   }
 
   setColors(colors: string[]): void {
-    const mesh = this.currentMesh;
+    const mesh = this.solidMesh;
     if (!mesh || colors.length !== this.atoms.length) return;
     const key = colors.join('|');
     if (key === this.colorKey) return;
@@ -319,61 +376,100 @@ export class AtomLayer {
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
 
-  setGhost(enabled: boolean): void {
-    if (this.ghost === enabled) return;
-    this.ghost = enabled;
-    const mesh = this.currentMesh;
-    if (!mesh) return;
-    mesh.material = enabled ? this.ghostMaterial : this.metalMaterial;
-    mesh.renderOrder = enabled ? 3 : 0;
-  }
-
   setVisible(visible: boolean): void {
-    if (this.currentMesh) this.currentMesh.visible = visible;
+    if (this.solidMesh) this.solidMesh.visible = visible;
+    if (this.ghostMesh) this.ghostMesh.visible = visible;
   }
 
+  /** Single-atom selection shim; the UI uses setSelection for multi-select. */
   setSelected(index: number | null): void {
-    const atom = index === null ? null : this.atoms[index];
-    this.selectionSprite.userData.atomIndex = index ?? undefined;
-    if (!atom || !this.isVisibleIndex(index!)) {
-      this.selectionSprite.visible = false;
+    this.setSelection(index === null ? [] : [index]);
+  }
+
+  /** Logical multi-selection; rings show for every selected atom still rendered. */
+  setSelection(indices: number[]): void {
+    this.selectionIndices = indices.slice();
+    this.syncSelectionSprites();
+  }
+
+  /** Positions one target ring per rendered selected atom (solid or atom-xray). */
+  private syncSelectionSprites(): void {
+    const wanted = this.selectionIndices.filter((index) => this.isRenderedIndex(index));
+    while (this.selectionSprites.length < wanted.length) {
+      const sprite = new Sprite(this.selectionMaterial);
+      sprite.renderOrder = 7;
+      sprite.visible = false;
+      sprite.scale.setScalar(2.4);
+      this.selectionSprites.push(sprite);
+      this.group.add(sprite);
+    }
+    while (this.selectionSprites.length > wanted.length) {
+      const sprite = this.selectionSprites.pop();
+      if (sprite) this.group.remove(sprite);
+    }
+    for (let i = 0; i < this.selectionSprites.length; i++) {
+      const sprite = this.selectionSprites[i];
+      const index = wanted[i];
+      const atom = this.atoms[index];
+      if (!atom) continue;
+      sprite.userData.atomIndex = index;
+      sprite.position.set(atom.position.x, atom.position.y, atom.position.z);
+      this.setRingScale(sprite, index, 2.4);
+      sprite.visible = !this.exportMode;
+    }
+  }
+
+  private updateHoverVisibility(): void {
+    if (this.exportMode) return;
+    const index = this.hoverSprite.userData.atomIndex as number | undefined;
+    if (index === undefined || !this.isRenderedIndex(index)) {
+      this.hoverSprite.visible = false;
       return;
     }
-    this.selectionSprite.position.set(atom.position.x, atom.position.y, atom.position.z);
-    this.updateRingScale();
-    this.selectionSprite.visible = !this.exportMode;
+    const atom = this.atoms[index];
+    this.hoverSprite.position.set(atom.position.x, atom.position.y, atom.position.z);
+    this.setRingScale(this.hoverSprite, index, 2.08);
+    this.hoverSprite.visible = true;
   }
 
   /**
-   * Hides the screen-space target ring and hover ring while exporting. The
-   * ring is UI feedback, not part of the crystal and must never be baked into
-   * a WebP/GIF. Previous visibility is restored on exit.
+   * Hides the screen-space target rings and hover ring while exporting. Rings
+   * are UI feedback, not part of the crystal, and must never be baked into a
+   * WebP/GIF. Previous visibility is restored on exit.
    */
   setExportMode(enabled: boolean): void {
     if (enabled === this.exportMode) return;
     if (enabled) {
-      this.exportSelectionWasVisible = this.selectionSprite.visible;
+      this.exportSelectionWasVisible = this.selectionSprites.map((sprite) => sprite.visible);
       this.exportShellWasVisible = this.shellSprite.visible;
-      this.selectionSprite.visible = false;
+      for (const sprite of this.selectionSprites) sprite.visible = false;
       this.hoverSprite.visible = false;
       this.shellSprite.visible = false;
     } else {
-      this.selectionSprite.visible = this.exportSelectionWasVisible;
+      this.exportSelectionWasVisible.forEach((wasVisible, index) => {
+        const sprite = this.selectionSprites[index];
+        if (sprite) sprite.visible = wasVisible;
+      });
       this.shellSprite.visible = this.exportShellWasVisible;
+      this.updateHoverVisibility();
     }
     this.exportMode = enabled;
   }
 
   setHover(index: number | null): void {
     this.hoverSprite.userData.atomIndex = index ?? undefined;
+    if (index === null) {
+      this.hoverSprite.visible = false;
+      return;
+    }
     if (this.exportMode) return;
-    const atom = index === null ? null : this.atoms[index];
-    if (!atom || !this.isVisibleIndex(index!)) {
+    const atom = this.atoms[index];
+    if (!atom || !this.isRenderedIndex(index)) {
       this.hoverSprite.visible = false;
       return;
     }
     this.hoverSprite.position.set(atom.position.x, atom.position.y, atom.position.z);
-    this.updateRingScale();
+    this.setRingScale(this.hoverSprite, index, 2.08);
     this.hoverSprite.visible = true;
   }
 
@@ -386,34 +482,51 @@ export class AtomLayer {
   }
 
   getSelectionInfo(): { mode: 'target-ring'; hasCage: false; visible: boolean } {
-    return { mode: 'target-ring', hasCage: false, visible: this.selectionSprite.visible };
+    return {
+      mode: 'target-ring',
+      hasCage: false,
+      visible: this.selectionSprites.some((sprite) => sprite.visible),
+    };
+  }
+
+  getSelectedIndices(): number[] {
+    return this.selectionIndices.slice();
   }
 
   getDisplayInfo(): {
     displayRadius: number;
     visibleCount: number;
+    xrayCount: number;
     totalCount: number;
     hiddenCount: number;
     ringScale: number;
   } {
+    const solidCount = this.getVisibleCount();
+    const xrayCount = this.getXrayCount();
     return {
       displayRadius: this.displayRadius,
-      visibleCount: this.getVisibleCount(),
+      visibleCount: solidCount,
+      xrayCount,
       totalCount: this.atoms.length,
-      hiddenCount: this.atoms.length - this.getVisibleCount(),
-      ringScale: this.selectionSprite.scale.x,
+      hiddenCount: this.atoms.length - solidCount - xrayCount,
+      ringScale: this.selectionSprites[0]?.scale.x ?? 0,
     };
   }
 
   dispose(): void {
-    if (this.currentMesh) {
-      this.group.remove(this.currentMesh);
-      this.currentMesh.dispose();
-      this.currentMesh = null;
+    if (this.solidMesh) {
+      this.group.remove(this.solidMesh);
+      this.solidMesh.dispose();
+      this.solidMesh = null;
+    }
+    if (this.ghostMesh) {
+      this.group.remove(this.ghostMesh);
+      this.ghostMesh.dispose();
+      this.ghostMesh = null;
     }
     this.metalMaterial.dispose();
     this.ghostMaterial.dispose();
-    this.selectionSprite.material.dispose();
+    this.selectionMaterial.dispose();
     this.hoverSprite.material.dispose();
     this.shellSprite.material.dispose();
     this.selectedTexture.dispose();

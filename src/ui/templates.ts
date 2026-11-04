@@ -76,8 +76,8 @@ export function renderShell(root: HTMLElement): void {
         <button class="btn" id="export-btn" type="button">
           ${icon('download', 15)}<span>导出</span>
         </button>
-        <button class="btn icon-only" id="reset-btn" type="button" aria-label="重置视角" title="重置视角 (R)">
-          ${icon('recenter', 16)}
+        <button class="btn icon-only" id="panel-toggle" type="button" aria-label="展开或收起控制台" aria-expanded="true" title="展开 / 收起控制台">
+          ${icon('sliders', 17)}
         </button>
         <button class="btn icon-only mobile-only" id="mobile-settings" type="button" aria-label="打开设置" aria-expanded="false" aria-controls="panel">
           ${icon('settings', 17)}
@@ -113,6 +113,7 @@ export function renderShell(root: HTMLElement): void {
             <div class="legend-row"><span class="dot dot-atom"></span><span>金属原子</span><em id="legend-atom">r = 1</em></div>
             <div class="legend-row" id="legend-o-row"><span class="dot dot-o"></span><span>八面体 OCT</span><em id="legend-o">r/R 0.414</em></div>
             <div class="legend-row" id="legend-t-row"><span class="dot dot-t"></span><span>四面体 TET</span><em id="legend-t">r/R 0.225</em></div>
+            <div class="legend-row" id="legend-ghost-row" hidden><span class="dot dot-ghost"></span><span>原子透视</span><em id="legend-ghost">范围外</em></div>
             <div class="legend-row"><span class="line-swatch"></span><span>虚线 + 角标</span><em>depth on</em></div>
           </div>
 
@@ -132,6 +133,55 @@ export function renderShell(root: HTMLElement): void {
         <div class="toast" id="toast" role="status" aria-live="polite" hidden>
           <span class="toast-dot"></span><span id="toast-text"></span>
         </div>
+      </div>
+
+      <div class="quick-dock" id="quick-dock" role="toolbar" aria-label="常驻快捷控制">
+        <div class="qd-popover" id="qd-popover" hidden></div>
+        <div class="qd-menu">
+          <button class="qd-btn" id="qd-reset" type="button" title="重置视角并回到适应视图状态 (R)" aria-label="重置视角">
+            ${icon('recenter', 17)}<span>重置视角</span>
+          </button>
+          <button class="qd-btn" id="qd-fit" type="button" title="按当前可见内容适应视图" aria-label="适应视图">
+            ${icon('fit', 17)}<span>适应视图</span>
+          </button>
+          <button class="qd-btn qd-swatch-btn" id="qd-color" type="button" title="所有小球颜色调整（内外层 / 统一色）" aria-label="所有小球颜色调整" aria-expanded="false" aria-haspopup="true">
+            <span class="qd-swatch" id="qd-swatch"></span><span>小球颜色</span>
+          </button>
+          <button class="qd-btn" id="qd-xray" type="button" role="switch" aria-checked="false" title="线框透视（晶胞线框穿透球体显示）" aria-label="线框透视">
+            ${icon('layers', 17)}<span>线框透视</span>
+          </button>
+          <button class="qd-btn" id="qd-ghost" type="button" role="switch" aria-checked="false" title="原子透视（整簇半透明，便于看内部间隙）" aria-label="原子透视">
+            ${icon('ghost', 17)}<span>原子透视</span>
+          </button>
+          <button class="qd-btn" id="qd-atoms" type="button" role="switch" aria-checked="true" title="显示 / 隐藏原子" aria-label="显示原子">
+            ${icon('eye', 17)}<span>显示原子</span>
+          </button>
+        </div>
+        <div class="qd-status" id="qd-status">0.50r · 范围 100% · 实心 63 · 透视 0</div>
+      </div>
+
+      <div class="atom-card" id="atom-card" hidden aria-label="选中原子操作">
+        <div class="atom-card-head">
+          <span>已选 <b id="atom-card-count">1</b> 个原子</span>
+          <button class="atom-card-clear" id="atom-card-clear" type="button">清除</button>
+        </div>
+        <p class="atom-card-meta" id="atom-card-meta">—</p>
+        <div class="atom-card-grid">
+          <label class="atom-card-field" for="atom-card-color">
+            <span>颜色</span>
+            <input type="color" id="atom-card-color" value="#F6C453" aria-label="选中原子颜色">
+          </label>
+          <button class="btn-small" id="atom-card-color-default" type="button">默认色</button>
+          <label class="atom-card-field wide" for="atom-card-size">
+            <span>大小 <output id="atom-card-size-out">100%</output></span>
+            <input type="range" id="atom-card-size" min="40" max="160" step="5" value="100">
+          </label>
+        </div>
+        <div class="atom-card-actions">
+          <button class="btn-small" id="atom-card-hide" type="button">隐藏所选</button>
+          <button class="btn-small" id="atom-card-restore" type="button">恢复所选</button>
+        </div>
+        <p class="atom-card-hint">Ctrl / ⌘ / Shift + 单击多选 · 点空白清除</p>
       </div>
 
       <div class="loading" id="loading" aria-live="polite">
@@ -154,7 +204,7 @@ export function renderShell(root: HTMLElement): void {
           <span class="panel-eyebrow">CONTROL DECK</span>
           <h2>实验控制台</h2>
         </div>
-        <button class="panel-close" id="panel-close" type="button" aria-label="关闭设置面板">${icon('close', 18)}</button>
+        <button class="panel-close" id="panel-close" type="button" aria-label="收起控制台" title="收起控制台">${icon('chevron', 18)}</button>
       </div>
 
       <div class="panel-scroll">
@@ -172,12 +222,34 @@ export function renderShell(root: HTMLElement): void {
               <div><dt>团簇原子</dt><dd id="data-cluster">63</dd></div>
             </dl>
             <div class="cell-diagram-block">
-              <div class="cell-diagram-head"><span>晶胞示意</span><em>SCHEMATIC · 非等比</em></div>
+              <div class="cell-diagram-head"><span>晶胞示意</span><em>SCHEMATIC · 等比投影</em></div>
               <div class="cell-diagram" id="cell-diagram"></div>
+            </div>
+            <div class="param-block" id="param-block">
+              <div class="param-head"><span>结构参数沙盒</span><em>SCIENTIFIC · HCP c/a</em></div>
+              <div class="param-controls" id="hcp-param-controls">
+                <label for="hcp-ca">HCP c/a <output id="hcp-ca-out">1.633</output></label>
+                <input type="range" id="hcp-ca" min="163.3" max="190" step="0.1" value="163.3" aria-label="HCP c/a 比例">
+                <div class="param-drag">
+                  <label for="hcp-ca-number">或精确输入</label>
+                  <input type="number" id="hcp-ca-number" min="1.633" max="1.9" step="0.001" value="1.633" inputmode="decimal" aria-label="HCP c/a 精确输入">
+                  <span class="param-drag-hint">越界值会被夹紧</span>
+                </div>
+                <div class="param-metrics">
+                  <span>a/r <b id="param-ar">2.0000</b></span>
+                  <span>c/r <b id="param-cr">3.2660</b></span>
+                  <span>APF <b id="param-apf">74.05%</b></span>
+                </div>
+                <p class="param-note" id="param-note">硬球模型要求 c/a ≥ √(8/3) ≈ 1.633：更小的 c 会让相邻层原子重叠，因此下限被锁定；拖动滑块或输入数值会拉开层间距，并实时重算 APF、O/T 间隙半径与最近邻距离。r = 1 始终不变。</p>
+                <div class="btn-row">
+                  <button class="btn-small" id="hcp-ca-reset" type="button">恢复理想 c/a</button>
+                </div>
+              </div>
+              <p class="param-lock" id="cubic-param-lock" hidden>立方结构：a/r 由硬球相切锁定（FCC = 2√2，BCC = 4/√3），没有可自由拖动的结构参数；切换到 HCP 可拖动 c/a 进行科学沙盒实验。</p>
             </div>
             <div class="line-note"><span>示例金属</span><b id="data-metals">Cu · Al · Au · Ag</b></div>
             <p class="cell-note" id="data-cellnote"></p>
-            <div class="scale-note">${icon('cube', 18)}<span>同一比例尺 · 底层硬球 r = 1；默认显示 0.68r 仅作缩球示意，切换结构仍共用尺度。</span></div>
+            <div class="scale-note">${icon('cube', 18)}<span>同一比例尺 · 底层硬球 r = 1；默认显示 0.50r 仅作缩球示意，切换结构仍共用尺度。</span></div>
             <div class="btn-row">
               <button class="btn-small" id="reset-view-btn" type="button">重置视角</button>
               <button class="btn-small" id="fit-view-btn" type="button">适应视图</button>
@@ -201,7 +273,7 @@ export function renderShell(root: HTMLElement): void {
             <div class="color-grid">
               <label class="color-field" for="color-inner">
                 <span id="inner-label">内层</span>
-                <span class="color-control"><input type="color" id="color-inner" value="#B07A1E" aria-label="内层颜色"><em id="color-inner-hex">#B07A1E</em></span>
+                <span class="color-control"><input type="color" id="color-inner" value="#B87333" aria-label="内层颜色"><em id="color-inner-hex">#B87333</em></span>
               </label>
               <label class="color-field" for="color-outer">
                 <span id="outer-label">外层</span>
@@ -213,8 +285,8 @@ export function renderShell(root: HTMLElement): void {
               <input type="checkbox" id="toggle-autorotate" class="switch" role="switch" checked>
             </div>
             <div class="range-row">
-              <label for="speed">旋转速度 <output id="speed-out">1.2×</output></label>
-              <input type="range" id="speed" min="0.4" max="3" step="0.1" value="1.2">
+              <label for="speed">旋转速度 <output id="speed-out">0.6×</output></label>
+              <input type="range" id="speed" min="0.2" max="2" step="0.1" value="0.6">
             </div>
             <div class="switch-row">
               <label for="toggle-cell">晶胞线框 <em>CELL FRAME</em></label>
@@ -228,15 +300,15 @@ export function renderShell(root: HTMLElement): void {
               <input type="range" id="cell-width" min="1" max="6" step="0.1" value="2.8">
             </div>
             <div class="range-row">
-              <label for="cell-brightness">线框亮度 <output id="cell-brightness-out">82% · 自动</output></label>
-              <input type="range" id="cell-brightness" min="30" max="100" step="1" value="82">
+              <label for="cell-brightness">线框亮度 <output id="cell-brightness-out">85%</output></label>
+              <input type="range" id="cell-brightness" min="30" max="100" step="1" value="85">
             </div>
             <div class="switch-row">
-              <label for="toggle-xray">线框透视 <em>X-RAY · 非默认</em></label>
+              <label for="toggle-xray">线框透视 <em>X-RAY</em></label>
               <input type="checkbox" id="toggle-xray" class="switch" role="switch">
             </div>
             <div class="switch-row">
-              <label for="toggle-ghost">原子透视 <em>GHOST</em></label>
+              <label for="toggle-ghost">原子透视 <em>ATOM X-RAY</em></label>
               <input type="checkbox" id="toggle-ghost" class="switch" role="switch">
             </div>
             <div class="switch-row">
@@ -249,24 +321,24 @@ export function renderShell(root: HTMLElement): void {
         <section class="psec is-open" data-section="display">
           <button class="ps-head" type="button" aria-expanded="true">
             <span class="ps-index">03</span><span class="ps-title">显示 <em>DISPLAY</em></span>
-            <span class="ps-badge" id="display-badge">缩球示意 · 19/63</span>
+            <span class="ps-badge" id="display-badge">缩球示意 · 实心 63 / 63</span>
             ${icon('chevron', 16, 'ps-chevron')}
           </button>
           <div class="ps-body">
             <div class="range-row">
-              <label for="display-radius">球体显示半径 <output id="display-radius-out">0.68r · 68%</output></label>
+              <label for="display-radius">球体显示半径 <output id="display-radius-out">0.50r · 50%</output></label>
               <div class="range-with-action">
-                <input type="range" id="display-radius" min="50" max="100" step="1" value="68">
+                <input type="range" id="display-radius" min="50" max="100" step="1" value="50">
                 <button class="btn-small" id="display-radius-reset" type="button">相切硬球 100%</button>
               </div>
             </div>
             <div class="range-row">
-              <label for="display-range">显示范围 <output id="display-range-out">62%</output></label>
+              <label for="display-range">显示范围 <output id="display-range-out">100%</output></label>
               <div class="range-with-action">
-                <input type="range" id="display-range" min="40" max="100" step="1" value="62">
+                <input type="range" id="display-range" min="40" max="100" step="1" value="100">
                 <button class="btn-small" id="display-all-btn" type="button" aria-pressed="false">显示全部</button>
               </div>
-              <span class="display-count">显示 <b id="display-visible-count">19</b> / <span id="display-total-count">63</span> 原子</span>
+              <span class="display-count">实心 <b id="display-visible-count">63</b> / <span id="display-total-count">63</span> 原子 · <em>原子透视</em> <b id="display-xray-count">0</b></span>
             </div>
             <button class="btn-small display-shell-btn" id="display-shell-btn" type="button" aria-pressed="false">配位壳（第一配位壳）· CN 12</button>
             <p class="cn-note" id="display-cn-note">FCC 的 CN = 12；配位壳 = 中心 + 12 邻居（13 球）。</p>
@@ -277,7 +349,7 @@ export function renderShell(root: HTMLElement): void {
             <div class="display-actions">
               <button class="btn-small" id="display-reset-btn" type="button">重置显示</button>
             </div>
-            <p class="micro-note">缩球与隐藏外层只是显示缩放 / 过滤：底层 r = 1 硬球、最近邻 2、CN 与间隙坐标 / 半径比均未改变。隐藏的原子不参与拾取。</p>
+            <p class="micro-note">缩球只是显示缩放：底层 r = 1 硬球、最近邻 2、CN 与间隙坐标 / 半径比均未改变。调整显示范围时，范围外的球体不再消失，而是切换为「原子透视」半透明状态；手动隐藏的原子不参与拾取。</p>
           </div>
         </section>
 
@@ -360,20 +432,21 @@ export function renderShell(root: HTMLElement): void {
         </section>
 
         <section class="psec" data-section="edit">
-          <button class="ps-head" type="button" aria-expanded="false">
-            <span class="ps-index">05</span><span class="ps-title">逐球着色 <em>PER-ATOM</em></span>
+          <button class="ps-head" type="button" aria-expanded="true">
+            <span class="ps-index">05</span><span class="ps-title">原子编辑 <em>PER-ATOM</em></span>
             <span class="ps-badge quiet" id="edit-badge">—</span>
             ${icon('chevron', 16, 'ps-chevron')}
           </button>
-          <div class="ps-body" hidden>
+          <div class="ps-body">
             <div class="switch-row">
-              <label for="toggle-edit">逐球编辑 <em>PICK &amp; PAINT</em></label>
-              <input type="checkbox" id="toggle-edit" class="switch" role="switch">
+              <label for="toggle-edit">原子交互 <em>PICK &amp; PAINT</em></label>
+              <input type="checkbox" id="toggle-edit" class="switch" role="switch" checked>
             </div>
+            <p class="micro-note">单击球体选中；Ctrl / ⌘ / Shift + 单击加入或移出多选；点击空白或 Esc 清除。选中后可在浮动卡片中改色、调整大小、隐藏。</p>
             <div class="atom-inspector" id="atom-inspector">
               <div class="inspector-empty" id="atom-empty">
                 <span class="empty-mark">${icon('cube', 22)}</span>
-                <span>未选择原子</span><em>开启后点击球体，或按 1 / 2 / 3 切换结构</em>
+                <span>未选择原子</span><em>单击模型中的球体即可选中，支持多选</em>
               </div>
               <div class="inspector-content" id="atom-content" hidden>
                 <div class="inspector-head">
@@ -382,20 +455,30 @@ export function renderShell(root: HTMLElement): void {
                   <span class="layer-chip" id="atom-layer">壳层 2</span>
                 </div>
                 <dl class="inspector-grid">
+                  <div><dt>已选</dt><dd><b id="atom-selected-count">1</b> 个原子</dd></div>
                   <div><dt>分数坐标</dt><dd id="atom-frac">(0.500, 0.500, 0.000)</dd></div>
                   <div><dt>层 / 位点</dt><dd id="atom-layer-detail">壳层 2 · face</dd></div>
                 </dl>
                 <label class="color-field wide" for="atom-color">
-                  <span>此球颜色</span>
+                  <span>选中颜色</span>
                   <span class="color-control"><input type="color" id="atom-color" value="#F6C453" aria-label="选中原子颜色"><em id="atom-color-hex">#F6C453</em></span>
                 </label>
-                <div class="btn-row">
-                  <button class="btn-small" id="atom-restore" type="button">恢复此球默认</button>
-                  <button class="btn-small danger-quiet" id="reset-all-colors" type="button">重置全部逐球颜色</button>
+                <div class="range-row">
+                  <label for="atom-size">显示大小 <output id="atom-size-out">100%</output></label>
+                  <input type="range" id="atom-size" min="40" max="160" step="5" value="100">
                 </div>
+                <div class="btn-row">
+                  <button class="btn-small" id="atom-hide" type="button">隐藏所选</button>
+                  <button class="btn-small" id="atom-show-hidden" type="button">显示全部隐藏</button>
+                  <button class="btn-small" id="atom-restore" type="button">恢复所选</button>
+                </div>
+                <div class="btn-row">
+                  <button class="btn-small danger-quiet" id="reset-all-colors" type="button">重置全部原子编辑</button>
+                </div>
+                <p class="micro-note" id="atom-hidden-note" hidden></p>
               </div>
             </div>
-            <p class="micro-note">点击球体编辑颜色；拖动超过 4px 不触发选择。逐球颜色以 atom.id 存入 localStorage，刷新与切换结构后保留。</p>
+            <p class="micro-note">逐球改色 / 大小 / 隐藏以 atom.id 存入 localStorage，刷新与切换结构后保留；底层晶体学数据始终不变。</p>
           </div>
         </section>
 

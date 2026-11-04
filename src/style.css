@@ -4373,3 +4373,683 @@ input[type="range"]:disabled {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+/* ==================================================================== */
+/* 2026-11 UI refresh: persistent quick dock, atom inspector card,      */
+/* collapsible control deck, scientific parameter sandbox, range-xray.  */
+/* ==================================================================== */
+
+/* --- persistent quick dock (bottom-right of the stage) -------------- */
+.quick-dock {
+  position: absolute;
+  right: 20px;
+  bottom: 100px;
+  z-index: 14;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.quick-dock > * {
+  pointer-events: auto;
+}
+
+/* Compact 2 x 3 corner card: the six always-on view / colour actions. */
+.qd-menu {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(84px, 1fr));
+  gap: 5px;
+  max-width: calc(100vw - 32px);
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(3, 13, 25, 0.86);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
+}
+
+.qd-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid rgba(92, 225, 255, 0.14);
+  border-radius: 7px;
+  background: rgba(6, 20, 36, 0.72);
+  color: var(--ink-soft);
+  font-family: var(--sans);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.qd-btn .icon {
+  width: 16px;
+  height: 16px;
+  color: var(--cyan-soft);
+}
+
+.qd-btn span {
+  white-space: nowrap;
+}
+
+.qd-btn em {
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.qd-btn:hover {
+  border-color: var(--line-strong);
+  background: rgba(92, 225, 255, 0.08);
+  color: #eafaff;
+}
+
+.qd-btn[aria-checked="false"] {
+  opacity: 0.66;
+}
+
+.qd-btn[aria-checked="true"],
+.qd-btn.is-on {
+  border-color: rgba(92, 225, 255, 0.55);
+  background: linear-gradient(180deg, rgba(92, 225, 255, 0.16), rgba(6, 24, 42, 0.85));
+  color: #eafaff;
+  box-shadow: inset 0 0 0 1px rgba(92, 225, 255, 0.18);
+}
+
+.qd-swatch {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+.qd-swatch-btn .icon {
+  display: none;
+}
+
+.qd-status {
+  padding: 0 2px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+}
+
+/* --- quick dock popovers ------------------------------------------- */
+.qd-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 2;
+  width: 272px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 11px 11px;
+  border: 1px solid rgba(92, 225, 255, 0.24);
+  border-radius: 10px;
+  background: rgba(4, 16, 30, 0.97);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+}
+
+.qd-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+
+.qd-pop-close {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.qd-pop-close:hover {
+  color: #fff;
+  border-color: var(--line-strong);
+}
+
+.qd-pop-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.qd-pop-row.wide {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.qd-pop-row output {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--gold);
+}
+
+.qd-pop-row input[type="color"] {
+  width: 46px;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
+.qd-pop-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--cyan);
+}
+
+.qd-pop-note {
+  margin: 8px 0 0;
+  font-size: 10px;
+  line-height: 1.65;
+  color: var(--dim);
+}
+
+/* colour-mode segmented control inside the dock popover */
+.qd-pop-modes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin: 0 0 8px;
+}
+
+.qd-mode {
+  padding: 6px 4px;
+  border: 1px solid rgba(92, 225, 255, 0.14);
+  border-radius: 6px;
+  background: rgba(6, 20, 36, 0.7);
+  color: var(--ink-soft);
+  font-family: var(--sans);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.qd-mode[aria-pressed="true"] {
+  border-color: rgba(92, 225, 255, 0.55);
+  background: linear-gradient(180deg, rgba(92, 225, 255, 0.16), rgba(6, 24, 42, 0.85));
+  color: #eafaff;
+}
+
+.qd-pop-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.qd-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+.qd-popover .btn-row {
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.qd-popover .type-toggle {
+  margin: 6px 0;
+}
+
+/* --- floating atom inspector card (bottom-left of the stage) ------- */
+.atom-card {
+  position: absolute;
+  left: 20px;
+  bottom: 100px;
+  z-index: 14;
+  width: min(300px, calc(100% - 40px));
+  padding: 11px 12px 12px;
+  border: 1px solid rgba(246, 196, 83, 0.28);
+  border-radius: 10px;
+  background: rgba(4, 15, 28, 0.92);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
+  animation: fade-up 0.22s ease both;
+}
+
+.atom-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.atom-card-head b {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.atom-card-clear {
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.atom-card-clear:hover {
+  color: #fff;
+}
+
+.atom-card-meta {
+  margin: 4px 0 9px;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  color: var(--dim);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.atom-card-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 7px 8px;
+}
+
+.atom-card-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.atom-card-field input[type="color"] {
+  width: 46px;
+  height: 26px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
+.atom-card-field.wide {
+  grid-column: 1 / -1;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+}
+
+.atom-card-field.wide input[type="range"] {
+  width: 100%;
+  accent-color: var(--gold);
+}
+
+.atom-card-field output {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--gold);
+}
+
+.atom-card-actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.atom-card-actions .btn-small {
+  flex: 1;
+}
+
+.atom-card-hint {
+  margin: 8px 0 0;
+  font-size: 9px;
+  line-height: 1.6;
+  color: var(--dim);
+}
+
+/* --- collapsible control deck (desktop only) ----------------------- */
+@media (min-width: 861px) {
+  .app-grid {
+    transition: grid-template-columns 0.32s cubic-bezier(0.22, 0.8, 0.24, 1);
+  }
+
+  .panel {
+    transition:
+      transform 0.32s cubic-bezier(0.22, 0.8, 0.24, 1),
+      opacity 0.24s ease;
+  }
+
+  .app-grid.panel-collapsed {
+    grid-template-columns: minmax(0, 1fr) 0px;
+  }
+
+  .app-grid.panel-collapsed .panel {
+    transform: translateX(24px);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    overflow: hidden;
+    border-left: 0;
+  }
+
+  .panel-head .panel-close {
+    display: inline-flex;
+  }
+
+  .panel-head .panel-close .icon {
+    transform: rotate(-90deg);
+  }
+
+  #panel-toggle[aria-expanded="false"] {
+    border-color: rgba(246, 196, 83, 0.5);
+    color: var(--gold);
+  }
+}
+
+/* --- scientific parameter sandbox ---------------------------------- */
+.param-block {
+  margin-top: 9px;
+  padding: 8px 10px 10px;
+  border: 1px solid rgba(246, 196, 83, 0.18);
+  border-radius: 7px;
+  background: rgba(8, 16, 26, 0.42);
+}
+
+.param-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--gold);
+}
+
+.param-head em {
+  font-style: normal;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+.param-controls label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.param-controls output {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.param-controls input[type="range"] {
+  width: 100%;
+  margin: 4px 0 7px;
+  accent-color: var(--gold);
+}
+
+.param-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 4px 0 7px;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--dim);
+}
+
+.param-metrics b {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.param-drag {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 7px;
+}
+
+.param-drag label {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.param-drag input[type="number"] {
+  width: 88px;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(4, 15, 28, 0.72);
+  color: var(--gold);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.param-drag input[type="number"]:focus-visible {
+  outline: 1px solid var(--cyan);
+  outline-offset: 1px;
+}
+
+.param-drag-hint {
+  font-size: 9px;
+  color: var(--dim);
+}
+
+.param-note,
+.param-lock {
+  margin: 4px 0 0;
+  font-size: 9.5px;
+  line-height: 1.7;
+  color: var(--dim);
+}
+
+.param-block .btn-row {
+  margin-top: 8px;
+}
+
+/* --- legend + display-range extras --------------------------------- */
+.legend-row .dot-ghost {
+  background: transparent;
+  border: 1px solid rgba(150, 222, 240, 0.65);
+  box-shadow: 0 0 6px rgba(120, 210, 235, 0.3);
+}
+
+.legend-row#legend-ghost-row em {
+  color: var(--cyan-soft);
+}
+
+.display-count em {
+  font-style: normal;
+  color: var(--cyan-soft);
+}
+
+#display-xray-count {
+  color: var(--cyan);
+}
+
+/* --- responsive ---------------------------------------------------- */
+@media (max-width: 1260px) {
+  .qd-menu {
+    grid-template-columns: repeat(2, minmax(76px, 1fr));
+  }
+
+  .qd-btn {
+    padding: 6px 7px;
+    font-size: 9.5px;
+  }
+
+  .quick-dock {
+    right: 14px;
+  }
+}
+
+@media (max-width: 860px) {
+  #panel-toggle {
+    display: none;
+  }
+
+  .quick-dock {
+    right: 8px;
+  }
+
+  .qd-menu {
+    grid-template-columns: repeat(2, minmax(72px, 1fr));
+    gap: 4px;
+    padding: 5px;
+  }
+
+  .qd-btn {
+    min-height: 40px;
+    padding: 6px 7px;
+    gap: 5px;
+    font-size: 9.5px;
+  }
+
+  .qd-btn .icon {
+    width: 15px;
+    height: 15px;
+  }
+
+  .qd-status {
+    font-size: 8px;
+  }
+
+  .qd-popover {
+    width: min(292px, calc(100vw - 24px));
+  }
+
+  .atom-card {
+    left: 8px;
+    bottom: 86px;
+    width: min(300px, calc(100vw - 16px));
+  }
+
+  .atom-card-meta {
+    font-size: 9px;
+  }
+
+  .panel-head .panel-close {
+    display: flex;
+  }
+}
+/* --- rail layout hardening after the longer multi-select hint ------ */
+.status-rail .legend {
+  flex: 0 0 172px;
+}
+
+.status-rail .legend-row > span:nth-child(2) {
+  white-space: nowrap;
+}
+
+.status-rail .hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1180px) {
+  .status-rail .hint {
+    display: none;
+  }
+}
+/* --- floating panel offsets derived from the measured rail height --- */
+.quick-dock {
+  bottom: calc(var(--rail-h, 96px) + 26px);
+}
+
+.atom-card {
+  bottom: calc(var(--rail-h, 96px) + 26px);
+}
+
+@media (max-width: 1260px) {
+  .quick-dock,
+  .atom-card {
+    bottom: calc(var(--rail-h, 88px) + 22px);
+  }
+}
+
+@media (max-width: 860px) {
+  .quick-dock {
+    bottom: calc(var(--rail-h, 72px) + 20px);
+  }
+
+  .atom-card {
+    left: 8px;
+    bottom: calc(var(--rail-h, 72px) + 150px);
+    width: min(300px, calc(100vw - 16px));
+  }
+}
+/* --- stacking: stage overlays (tooltip/toast/labels) above the dock --- */
+.stage-overlay {
+  z-index: 15;
+}
+
+.quick-dock,
+.atom-card {
+  z-index: 14;
+}
+/* --- legend: keep the intended 2-column compaction; never shrink rows --- */
+.status-rail .legend {
+  flex: 0 0 320px;
+  width: 320px;
+  max-width: 320px;
+}
+
+@media (max-width: 1260px) {
+  .status-rail .legend {
+    display: none;
+  }
+}

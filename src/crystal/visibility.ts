@@ -122,6 +122,74 @@ export function computeAtomVisibility(
   return { visible, indices, count: indices.length, shell };
 }
 
+/**
+ * Per-atom render state for the range/透视 model.
+ *
+ * `base` is the pure crystallographic range / shell / all decision and keeps
+ * driving the interstitial follow rules. `solid` additionally removes atoms the
+ * user hid and the global atom-xray toggle. In range mode, atoms outside the
+ * cut are no longer deleted from the scene: they are drawn as atom-xray ghosts
+ * (`xray`), which is what "调整显示范围后被隐藏的球体使用原子透视" means.
+ */
+export interface AtomRenderState {
+  base: boolean[];
+  solid: boolean[];
+  xray: boolean[];
+  rendered: boolean[];
+  baseCount: number;
+  solidCount: number;
+  xrayCount: number;
+}
+
+export function computeAtomRenderState(
+  atoms: Atom[],
+  mode: DisplayMode,
+  range: number,
+  hidden: Readonly<Record<string, boolean>> = {},
+  ghostAll = false,
+): AtomRenderState {
+  const visibility = computeAtomVisibility(atoms, mode, range);
+  const base = visibility.visible;
+  const solid = atoms.map(() => false);
+  const xray = atoms.map(() => false);
+  const rendered = atoms.map(() => false);
+  let solidCount = 0;
+  let xrayCount = 0;
+
+  for (let i = 0; i < atoms.length; i++) {
+    if (hidden[atoms[i].id]) continue;
+    if (ghostAll) {
+      // 原子透视: every atom that survives the range filter is a ghost, so no
+      // solid sphere is drawn and nothing is double-rendered.
+      if (base[i]) {
+        xray[i] = true;
+        rendered[i] = true;
+        xrayCount++;
+      }
+      continue;
+    }
+    if (base[i]) {
+      solid[i] = true;
+      rendered[i] = true;
+      solidCount++;
+    } else if (mode === 'range') {
+      xray[i] = true;
+      rendered[i] = true;
+      xrayCount++;
+    }
+  }
+
+  return {
+    base,
+    solid,
+    xray,
+    rendered,
+    baseCount: visibility.count,
+    solidCount,
+    xrayCount,
+  };
+}
+
 /** Whether an interstitial position itself lies inside the active display range. */
 export function isSiteInDisplayRange(
   site: InterstitialSite,

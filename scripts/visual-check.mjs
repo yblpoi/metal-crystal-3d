@@ -73,12 +73,18 @@ async function settle(page, ms = 550) {
 
 async function main() {
   fs.mkdirSync(ARTIFACTS, { recursive: true });
-  const viteBin = path.join(ROOT, 'node_modules/.bin/vite');
-  const server = spawn(viteBin, ['--port', String(PORT), '--strictPort', '--host', '127.0.0.1'], {
-    cwd: ROOT,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, BROWSER: 'none' },
-  });
+  // Cross-platform: run vite.js through the current Node binary. Spawning
+  // node_modules/.bin/vite fails on Windows (ENOENT: the shim has no .cmd suffix).
+  const viteJs = path.join(ROOT, 'node_modules/vite/bin/vite.js');
+  const server = spawn(
+    process.execPath,
+    [viteJs, '--port', String(PORT), '--strictPort', '--host', '127.0.0.1'],
+    {
+      cwd: ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, BROWSER: 'none' },
+    },
+  );
   let serverLog = '';
   server.stdout.on('data', (chunk) => {
     serverLog += chunk.toString();
@@ -161,18 +167,19 @@ async function main() {
       };
     });
     record(
-      '默认显示：0.68r / 62% / range / 跟随间隙位',
-      Math.abs(defaultDisplay.state.atomDisplayRadius - 0.68) < 1e-9 &&
-        Math.abs(defaultDisplay.state.displayRange - 0.62) < 1e-9 &&
+      '默认显示：0.50r / 100% / range / 跟随间隙位',
+      Math.abs(defaultDisplay.state.atomDisplayRadius - 0.5) < 1e-9 &&
+        Math.abs(defaultDisplay.state.displayRange - 1) < 1e-9 &&
         defaultDisplay.state.displayMode === 'range' &&
         defaultDisplay.state.followRangeForSites === true,
       JSON.stringify(defaultDisplay.state),
     );
     record(
-      'FCC 默认可见原子 >10 且 <63（未堆满立方）',
-      defaultDisplay.display.visibleAtomCount > 10 &&
-        defaultDisplay.display.visibleAtomCount < 63,
-      `${defaultDisplay.display.visibleAtomCount} / ${defaultDisplay.display.totalAtomCount}`,
+      'FCC 默认 100% 范围显示全部 63 原子（无透视/隐藏）',
+      defaultDisplay.display.visibleAtomCount === 63 &&
+        defaultDisplay.display.xrayAtomIndices.length === 0 &&
+        defaultDisplay.display.hiddenAtomIndices.length === 0,
+      `${defaultDisplay.display.visibleAtomCount} / ${defaultDisplay.display.totalAtomCount} · xray ${defaultDisplay.display.xrayAtomIndices.length}`,
     );
     record(
       '显示区无重复黄色提示条，未开启间隙时隐藏 OCT/TET 图例',
@@ -185,8 +192,8 @@ async function main() {
       'UI 计数与可见实例一致且为 tabular 显示',
       Number(defaultDisplay.ui.visible) === defaultDisplay.display.visibleAtomCount &&
         Number(defaultDisplay.ui.total) === defaultDisplay.display.totalAtomCount &&
-        defaultDisplay.ui.radiusOut?.includes('0.68r') &&
-        defaultDisplay.ui.rangeOut?.includes('62%') &&
+        defaultDisplay.ui.radiusOut?.includes('0.50r') &&
+        defaultDisplay.ui.rangeOut?.includes('100%') &&
         defaultDisplay.ui.follow === true,
       JSON.stringify(defaultDisplay.ui),
     );
@@ -202,7 +209,7 @@ async function main() {
 
     // radius slider: camera must not refit, spheres must really shrink
     const centerIndex = defaultDisplay.display.shellCenterIndex;
-    const diameterAt68 = await page.evaluate(
+    const diameterAt50 = await page.evaluate(
       (index) => window.__CRYSTAL_DEBUG__.getAtomScreenDiameter(index),
       centerIndex,
     );
@@ -221,8 +228,8 @@ async function main() {
     record(
       '显示半径 100% 恢复相切（r=1，像素直径变大）',
       Math.abs(radius100.state.atomDisplayRadius - 1) < 1e-9 &&
-        radius100.diameter > diameterAt68 * 1.3,
-      `${diameterAt68.toFixed(1)} → ${radius100.diameter.toFixed(1)} px`,
+        radius100.diameter > diameterAt50 * 1.7,
+      `${diameterAt50.toFixed(1)} → ${radius100.diameter.toFixed(1)} px`,
     );
     record(
       '半径滑杆不自动 fit 相机',
@@ -241,8 +248,8 @@ async function main() {
     record(
       '显示半径 50% 明显变小',
       Math.abs(radius50.state.atomDisplayRadius - 0.5) < 1e-9 &&
-        radius50.diameter < diameterAt68 * 0.8,
-      `${diameterAt68.toFixed(1)} → ${radius50.diameter.toFixed(1)} px`,
+        radius50.diameter < radius100.diameter * 0.6,
+      `100% ${radius100.diameter.toFixed(1)} → 50% ${radius50.diameter.toFixed(1)} px`,
     );
     const cameraBeforeHardSphere = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getCamera().distance);
     await page.locator('#display-radius-reset').click();
@@ -297,16 +304,18 @@ async function main() {
       uiVisible: document.querySelector('#display-visible-count')?.textContent,
     }));
     record(
-      '显示范围 40% 只剩中心原子',
-      range40.display.visibleAtomCount === 1 && range40.uiVisible === '1',
-      `${range40.display.visibleAtomCount} · UI ${range40.uiVisible}`,
+      '显示范围 40% 只剩中心原子，其余转原子透视',
+      range40.display.visibleAtomCount === 1 &&
+        range40.uiVisible === '1' &&
+        range40.display.xrayAtomIndices.length === 62 &&
+        range40.display.hiddenAtomIndices.length === 0,
+      `${range40.display.visibleAtomCount} · UI ${range40.uiVisible} · xray ${range40.display.xrayAtomIndices.length}`,
     );
     await page.evaluate(() => window.__CRYSTAL_DEBUG__.setAutoRotate(false));
     await settle(page, 250);
-    // Return to the shipped 0.68r defaults before capturing "show all".
+    // Return to the shipped 0.50r / 100% defaults before capturing "show all".
     await page.locator('#display-reset-btn').click();
     await settle(page, 350);
-    const cameraBeforeAll = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getCamera().distance);
     await page.locator('#display-all-btn').click();
     await settle(page, 900);
     const allAtoms = await page.evaluate(() => {
@@ -337,10 +346,17 @@ async function main() {
         count: allAtoms.display.visibleAtomCount,
       }),
     );
+    // 自动 fit 应与显式 fitView() 收敛到同一相机距离（同一取景公式）。
+    const refitDistance = await page.evaluate(async () => {
+      const debug = window.__CRYSTAL_DEBUG__;
+      debug.fitView();
+      await new Promise((resolve) => setTimeout(resolve, 650));
+      return debug.getCamera().distance;
+    });
     record(
-      '“显示全部”自动 fit 到全部可见原子',
-      allAtoms.camera > cameraBeforeAll + 0.5,
-      `${cameraBeforeAll.toFixed(3)} → ${allAtoms.camera.toFixed(3)}`,
+      '“显示全部”自动 fit 与显式适应视图一致',
+      Math.abs(allAtoms.camera - refitDistance) < 0.05,
+      `${allAtoms.camera.toFixed(3)} vs refit ${refitDistance.toFixed(3)}`,
     );
     const allOutside = allAtoms.extents.filter(
       (entry) =>
@@ -427,7 +443,7 @@ async function main() {
       'FCC 配位壳：中心目标环 + “中心 · CN 12” + 12 顶点 cuboctahedron',
       shellFccVisual.ring.visible === true &&
         shellFccVisual.ring.index === shellFccVisual.display.shellCenterIndex &&
-        Math.abs(shellFccVisual.ring.scale - 2.4 * 0.68) < 1e-6 &&
+        Math.abs(shellFccVisual.ring.scale - 2.4 * 0.5) < 1e-6 &&
         shellFccVisual.labels.some((text) => text.includes('中心') && text.includes('CN 12')) &&
         shellFccVisual.visual.shape === 'cuboctahedron' &&
         shellFccVisual.visual.vertexCount === 12 &&
@@ -555,6 +571,7 @@ async function main() {
         const canvas = document.getElementById('crystal-canvas')?.getBoundingClientRect();
         return {
           scale: debug.getScaleReference(),
+          camera: debug.getCamera().distance,
           bounds: debug.getModelScreenBounds(),
           cell: debug.getCellInfo(),
           state: debug.getState(),
@@ -571,12 +588,13 @@ async function main() {
     }
 
     record(
-      '三种结构默认都保持缩球且未显示满团簇',
+      '三种结构默认 0.50r 缩球且范围 100% 显示全部原子',
       structureReports.every(
         (entry) =>
-          entry.display.visibleAtomCount > 10 &&
-          entry.display.visibleAtomCount < entry.display.totalAtomCount &&
-          Math.abs(entry.display.displayRadius - 0.68) < 1e-9,
+          entry.display.visibleAtomCount === entry.display.totalAtomCount &&
+          entry.display.xrayAtomIndices.length === 0 &&
+          Math.abs(entry.display.displayRadius - 0.5) < 1e-9 &&
+          Math.abs(entry.state.displayRange - 1) < 1e-9,
       ),
       structureReports
         .map(
@@ -588,16 +606,26 @@ async function main() {
     const defaultCounts = Object.fromEntries(
       structureReports.map((entry) => [entry.id, entry.display.visibleAtomCount]),
     );
-    record(
-      '默认可见数 FCC 19 / BCC 15 / HCP 19',
-      defaultCounts.fcc === 19 && defaultCounts.bcc === 15 && defaultCounts.hcp === 19,
-      JSON.stringify(defaultCounts),
+    const defaultTotals = Object.fromEntries(
+      structureReports.map((entry) => [entry.id, entry.display.totalAtomCount]),
     );
-    const scales = structureReports.map((entry) => entry.scale);
     record(
-      '三种结构原子屏幕直径一致',
-      Math.max(...scales) - Math.min(...scales) < 0.5,
-      scales.map((value) => value.toFixed(2)).join(' / ') + ' px',
+      '默认可见数与团簇原子总数一致（FCC 63 / BCC 35 / HCP 57）',
+      defaultCounts.fcc === defaultTotals.fcc &&
+        defaultCounts.bcc === defaultTotals.bcc &&
+        defaultCounts.hcp === defaultTotals.hcp &&
+        defaultCounts.fcc === 63 &&
+        defaultCounts.bcc === 35 &&
+        defaultCounts.hcp === 57,
+      JSON.stringify({ counts: defaultCounts, totals: defaultTotals }),
+    );
+    // 100% 显示范围下每种结构按自身取景半径 fit，像素/世界单位的比例必然不同；
+    // 真正该一致的是「相机距离 / 取景半径」这一 fit 公式的比值。
+    const fitRatios = structureReports.map((entry) => entry.camera / entry.display.fitRadius);
+    record(
+      '三种结构共用同一 fit 公式（相机距离 / 取景半径一致）',
+      Math.max(...fitRatios) - Math.min(...fitRatios) < 0.02,
+      fitRatios.map((value) => value.toFixed(4)).join(' / '),
     );
     for (const entry of structureReports) {
       const b = entry.bounds;
@@ -628,10 +656,12 @@ async function main() {
           entry.cell.dashed === true,
         JSON.stringify(entry.cell),
       );
+      // 缩球后 fit 半径包含原子球面（cell + displayRadius），但仍须小于含角标的包围半径，
+      // 说明角标没有把视图撑大。
       const excludesCorners =
         entry.id === 'hcp'
           ? entry.cell.cornerMarks === 0
-          : entry.display.fitRadius <= entry.display.cellBoundsRadius + 1e-6 &&
+          : entry.display.fitRadius < entry.display.cellCornerBoundsRadius - 1e-3 &&
             entry.display.cellBoundsRadius < entry.display.cellCornerBoundsRadius;
       record(
         `${entry.id.toUpperCase()} 角标跟随缩球且不撑大 fitBounds`,
@@ -652,23 +682,32 @@ async function main() {
     const hcpShells = Object.entries(hcpStats.shells)
       .map(([distance, count]) => [Number(distance), count])
       .sort((a, b) => a[0] - b[0]);
+    // 100% 显示范围下 HCP 团簇 57 原子全部为实心，壳层随距离对称展开。
+    const expectedShells = [
+      [0, 1],
+      [2, 12],
+      [Math.sqrt(8), 6],
+      [Math.sqrt(12), 18],
+      [4, 6],
+      [Math.sqrt(20), 8],
+      [Math.sqrt(24), 2],
+      [Math.sqrt(28), 4],
+    ];
     record(
-      'HCP 默认 19 原子 = 1 + 12 + 6 对称壳层',
-      hcpStats.count === 19 &&
-        hcpShells.length === 3 &&
-        Math.abs(hcpShells[0][0]) < 1e-6 &&
-        hcpShells[0][1] === 1 &&
-        Math.abs(hcpShells[1][0] - 2) < 1e-6 &&
-        hcpShells[1][1] === 12 &&
-        Math.abs(hcpShells[2][0] - Math.sqrt(8)) < 1e-3 &&
-        hcpShells[2][1] === 6,
+      'HCP 默认 57 原子 = 1 + 12 + 6 + 18 + 6 + 8 + 2 + 4 对称壳层',
+      hcpStats.count === 57 &&
+        hcpShells.length === expectedShells.length &&
+        expectedShells.every(
+          ([distance, count], index) =>
+            Math.abs(hcpShells[index][0] - distance) < 1e-3 && hcpShells[index][1] === count,
+        ),
       JSON.stringify(hcpShells),
     );
     record(
-      'HCP 三层分布 6 / 7 / 6，中心原子在原点',
-      hcpStats.layers['0'] === 6 &&
-        hcpStats.layers['1'] === 7 &&
-        hcpStats.layers['2'] === 6 &&
+      'HCP 三层各 19 原子，中心原子在原点',
+      hcpStats.layers['0'] === 19 &&
+        hcpStats.layers['1'] === 19 &&
+        hcpStats.layers['2'] === 19 &&
         hcpStats.centerDistance < 1e-9,
       JSON.stringify({ layers: hcpStats.layers, centerDistance: hcpStats.centerDistance }),
     );
@@ -834,6 +873,27 @@ async function main() {
       window.__CRYSTAL_DEBUG__.setEditMode(true);
     });
     await settle(page, 800);
+    // 新显示模型下缩小范围不再产生「隐藏」原子（改为原子透视），所以这里
+    // 显式隐藏几个画面中部的原子，用来回归「隐藏原子不参与拾取」。
+    const preHiddenIds = await page.evaluate(() => {
+      const debug = window.__CRYSTAL_DEBUG__;
+      const display = debug.getDisplayInfo();
+      const hidden = [];
+      for (let i = 0; i < display.totalAtomCount && hidden.length < 6; i++) {
+        if (!debug.isAtomVisible(i)) continue;
+        const point = debug.getAtomScreenPosition(i);
+        if (!point || !point.inView) continue;
+        if (point.x < 320 || point.y < 280) continue;
+        if (!debug.selectAtomByIndex(i)) continue;
+        const id = debug.getSelectedAtomIds()[0];
+        debug.clearSelection();
+        if (!id) continue;
+        debug.setAtomHidden([id], true);
+        hidden.push(id);
+      }
+      return hidden;
+    });
+    await settle(page, 450);
     const hiddenTarget = await page.evaluate(() => {
       const debug = window.__CRYSTAL_DEBUG__;
       const display = debug.getDisplayInfo();
@@ -889,6 +949,9 @@ async function main() {
         JSON.stringify(hiddenSelection),
       );
     }
+    // 还原上面为测试而隐藏的原子，避免影响后续逐球编辑用例。
+    await page.evaluate((ids) => window.__CRYSTAL_DEBUG__.setAtomHidden(ids, false), preHiddenIds);
+    await settle(page, 400);
 
     // --- per-atom editing ------------------------------------------
     await page.keyboard.press('Escape');
@@ -926,7 +989,7 @@ async function main() {
       const editRadius = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getState().atomDisplayRadius);
       record(
         '缩球状态下点击原子仍可选中且检查器出现',
-        Boolean(selected) && inspectorVisible && Math.abs(editRadius - 0.68) < 1e-9,
+        Boolean(selected) && inspectorVisible && Math.abs(editRadius - 0.5) < 1e-9,
         `${selected ?? 'null'} · radius ${editRadius}`,
       );
       const selectionInfo = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getSelectionInfo());
@@ -990,18 +1053,27 @@ async function main() {
         });
         await settle(page, 450);
         const hiddenAfterRange = await page.evaluate(
-          (index) => ({
-            selected: window.__CRYSTAL_DEBUG__.getState().selectedAtomId,
-            visible: window.__CRYSTAL_DEBUG__.isAtomVisible(index),
-            atomContentHidden: document.querySelector('#atom-content')?.hasAttribute('hidden'),
-          }),
+          (index) => {
+            const debug = window.__CRYSTAL_DEBUG__;
+            const display = debug.getDisplayInfo();
+            return {
+              selected: debug.getState().selectedAtomId,
+              solid: debug.isAtomVisible(index),
+              xray: display.xrayAtomIndices.includes(index),
+              hidden: display.hiddenAtomIndices.includes(index),
+              atomContentHidden: document.querySelector('#atom-content')?.hasAttribute('hidden'),
+            };
+          },
           atomPoint.index,
         );
+        // 新语义：超出显示范围的球不消失，而是转为「原子透视」，选中状态与检查器保留。
         record(
-          '选中原子被范围隐藏后清除选择并隐藏检查器',
-          hiddenAfterRange.selected === null &&
-            hiddenAfterRange.visible === false &&
-            hiddenAfterRange.atomContentHidden === true,
+          '选中原子超出范围后转为原子透视且保持选中',
+          hiddenAfterRange.selected !== null &&
+            hiddenAfterRange.solid === false &&
+            hiddenAfterRange.xray === true &&
+            hiddenAfterRange.hidden === false &&
+            hiddenAfterRange.atomContentHidden === false,
           JSON.stringify(hiddenAfterRange),
         );
         await page.locator('#display-reset-btn').click();
@@ -1082,15 +1154,16 @@ async function main() {
         ghostInfo.depthWrite === false,
       JSON.stringify(ghostInfo),
     );
-    const rangeNote = await page.evaluate(
-      () => document.querySelector('#site-range-note')?.textContent ?? '',
-    );
+    const rangeNoteInfo = await page.evaluate(() => ({
+      note: document.querySelector('#site-range-note')?.textContent ?? '',
+      completeO: window.__CRYSTAL_DEBUG__.getCounts().completeO,
+    }));
     record(
-      '间隙范围说明写清“当前显示范围 6 个完整 OCT / 关闭跟随可看全部”',
-      rangeNote.includes('6 个完整 OCT') &&
-        rangeNote.includes('关闭') &&
-        rangeNote.includes('全部'),
-      rangeNote,
+      '间隙范围说明写清“当前显示范围 N 个完整 OCT / 关闭跟随可看全部”',
+      rangeNoteInfo.note.includes(`${rangeNoteInfo.completeO} 个完整 OCT`) &&
+        rangeNoteInfo.note.includes('关闭') &&
+        rangeNoteInfo.note.includes('全部'),
+      rangeNoteInfo.note,
     );
     const browserState = await page.evaluate(() => ({
       position: document.getElementById('site-position')?.textContent,
@@ -1153,7 +1226,6 @@ async function main() {
       }`,
     );
 
-    const siteInfoBefore = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getSiteVisibilityInfo());
     const visibleSiteCountBefore = followOn.visibleSites;
     await page.evaluate(() => {
       const toggle = document.querySelector('#display-follow-sites');
@@ -1171,14 +1243,19 @@ async function main() {
       };
     });
     record(
-      '关闭跟随后显示更多间隙位',
+      '关闭跟随后位点计数与面板保持一致',
       followOff.follow === false &&
-        followOff.visibleSites > visibleSiteCountBefore &&
+        followOff.visibleSites > 0 &&
         Number(followOff.uiVisible) === followOff.visibleSites,
       `${visibleSiteCountBefore} → ${followOff.visibleSites}`,
     );
 
-    const partialSite = siteInfoBefore.find(
+    // 100% 范围下所有原子都在 base 可见集里；为了构造“邻接原子在范围外”的位点，
+    // 临时收窄显示范围（原子转为透视），再找 complete 但邻接不全的位点。
+    await page.evaluate(() => window.__CRYSTAL_DEBUG__.setDisplay({ range: 0.6 }));
+    await settle(page, 500);
+    const siteInfoPartial = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getSiteVisibilityInfo());
+    const partialSite = siteInfoPartial.find(
       (site) => site.complete && !site.allNeighborsVisible,
     );
     if (partialSite) {
@@ -1207,20 +1284,32 @@ async function main() {
       record('隐藏邻居时不给配位多面体并显示范围提示', false, 'no complete site with hidden neighbours');
     }
 
+    await page.evaluate(() => window.__CRYSTAL_DEBUG__.setDisplay({ range: 1 }));
+    await settle(page, 450);
     await page.evaluate(() => {
       const toggle = document.querySelector('#display-follow-sites');
       toggle.checked = true;
       toggle.dispatchEvent(new Event('change', { bubbles: true }));
     });
     await settle(page, 700);
-    const refollow = await page.evaluate(() => ({
-      follow: window.__CRYSTAL_DEBUG__.getState().followRangeForSites,
-      selected: window.__CRYSTAL_DEBUG__.getState().selectedSiteId,
-      visibleSites: window.__CRYSTAL_DEBUG__.getDisplayInfo().visibleSiteCount,
-    }));
+    const refollow = await page.evaluate(() => {
+      const debug = window.__CRYSTAL_DEBUG__;
+      const selected = debug.getState().selectedSiteId;
+      const selectedVisible = selected
+        ? debug.getSiteVisibilityInfo().find((site) => site.id === selected)?.visible === true
+        : false;
+      return {
+        follow: debug.getState().followRangeForSites,
+        selected,
+        selectedVisible,
+        visibleSites: debug.getDisplayInfo().visibleSiteCount,
+      };
+    });
     record(
-      '重新跟随范围后隐藏位点取消选中',
-      refollow.follow === true && refollow.selected === null && refollow.visibleSites > 0,
+      '重新跟随范围后按位点可见性保留/取消选中',
+      refollow.follow === true &&
+        refollow.visibleSites > 0 &&
+        (refollow.selected === null || refollow.selectedVisible === true),
       JSON.stringify(refollow),
     );
 
@@ -1331,10 +1420,10 @@ async function main() {
       cell: window.__CRYSTAL_DEBUG__.getCellInfo(),
     }));
     record(
-      '“自动”按钮恢复缩球态 2.8px / 82%',
+      '“自动”按钮恢复缩球态 2.8px / 85%',
       autoRestored.state.cellStyleAuto === true &&
         Math.abs(autoRestored.cell.lineWidth - 2.8) < 1e-6 &&
-        Math.abs(autoRestored.cell.brightness - 0.82) < 1e-6,
+        Math.abs(autoRestored.cell.brightness - 0.85) < 1e-6,
       JSON.stringify(autoRestored),
     );
 
@@ -1393,10 +1482,10 @@ async function main() {
       `scrollWidth ${mobile.doc}/${mobile.body} ≤ ${mobile.inner}`,
     );
     record(
-      '移动端缩球模型 50-64% viewport 且水平居中',
+      '移动端缩球模型 50-85% viewport 且水平居中',
       Boolean(mobile.bounds) &&
         mobile.bounds.width >= mobile.inner * 0.5 &&
-        mobile.bounds.width <= mobile.inner * 0.64 &&
+        mobile.bounds.width <= mobile.inner * 0.85 &&
         Math.abs((mobile.bounds.left + mobile.bounds.right) / 2 - mobile.inner / 2) < 30,
       mobile.bounds
         ? `${mobile.bounds.width.toFixed(0)} / ${mobile.inner} · centre ${(
@@ -1641,7 +1730,8 @@ async function main() {
 
     // --- console / network ----------------------------------------
     const environmentWarnings = consoleMessages.filter((entry) =>
-      /GL Driver Message|GPU stall due to ReadPixels/.test(entry.text),
+      // Edge 无头环境自带的 Permissions-Policy 提示与应用无关。
+      /GL Driver Message|GPU stall due to ReadPixels|Permissions-Policy/.test(entry.text),
     );
     const appConsole = consoleMessages.filter((entry) => !environmentWarnings.includes(entry));
     record(

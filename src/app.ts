@@ -1,24 +1,37 @@
 import { Vector2, Vector3 } from 'three';
-import { buildCrystal } from './crystal/structures';
+import {
+  HCP_MAX_C_OVER_A,
+  HCP_MIN_C_OVER_A,
+  buildCrystal,
+  clampHcpCOverA,
+} from './crystal/structures';
 import type { Atom, CrystalModel, InterstitialSite, StructureId } from './crystal/types';
 import {
   clampDisplayRadius,
   clampDisplayRange,
+  computeAtomRenderState,
   computeAtomVisibility,
   isSiteVisibleInDisplay,
   siteNeighborsFullyVisible,
   siteVisibleCoordination,
   visibleSitesInDisplay,
+  type AtomRenderState,
   type DisplayMode,
 } from './crystal/visibility';
 import { resolveBackground } from './background';
 import { filterSites } from './site-filter';
 import {
+  DEFAULT_COLOR_INNER,
+  DEFAULT_COLOR_OUTER,
+  RADIAL_SPLIT,
+  atomEditCount,
+  clampAtomSize,
   isHexColor,
   normalizeHex,
   resolveAtomColor,
+  resolveAtomSize,
   resolveCellStyle,
-  selectedAtom as pickSelectedAtom,
+  resolveHcpCOverA,
   type AppState,
   type SiteFilter,
 } from './state';
@@ -32,6 +45,7 @@ import { AppStore as Store } from './state';
 import { ExportDialog } from './ui/dialog';
 import { runExportSession } from './export/session';
 import type { ExportHooks, ExportOptions, ExportResult } from './export/types';
+import { icon } from './ui/icons';
 import {
   atomKindLabel,
   atomLayerLabel,
@@ -48,11 +62,16 @@ const STRUCTURE_IDS: StructureId[] = ['fcc', 'bcc', 'hcp'];
 export interface DebugState {
   structure: StructureId;
   colorMode: AppState['colorMode'];
+  colorInner: string;
+  colorOuter: string;
+  /** Primary (first) selected atom, kept for the existing acceptance scripts. */
   selectedAtomId: string | null;
+  selectedAtomIds: string[];
   selectedSiteId: string | null;
   focusedSiteId: string | null;
   editMode: boolean;
   autoRotate: boolean;
+  autoRotateSpeed: number;
   showCell: boolean;
   cellXray: boolean;
   cellLineWidth: number;
@@ -71,6 +90,10 @@ export interface DebugState {
   siteFilter: SiteFilter;
   siteBrowserType: 'O' | 'T';
   atomColors: Record<string, string>;
+  atomHidden: Record<string, boolean>;
+  atomSizes: Record<string, number>;
+  allAtomColor: string | null;
+  hcpCOverA: number;
   background: AppState['background'];
 }
 
@@ -88,6 +111,13 @@ export interface DebugApi {
   setStructure: (id: StructureId) => boolean;
   selectAtomByIndex: (index: number) => boolean;
   setAtomColor: (id: string, hex: string) => boolean;
+  getSelectedAtomIds: () => string[];
+  setAtomHidden: (ids: string[], hidden: boolean) => void;
+  setAtomSize: (ids: string[], size: number) => void;
+  clearSelection: () => void;
+  setHcpCOverA: (ratio: number) => boolean;
+  getAtomRenderInfo: () => { solid: number; xray: number; rendered: number; hidden: number };
+  isAtomRendered: (index: number) => boolean;
   getCamera: () => CameraSnapshot;
   setAutoRotate: (enabled: boolean) => void;
   setEditMode: (enabled: boolean) => void;
@@ -116,6 +146,7 @@ export interface DebugApi {
   getShellRingInfo: () => { visible: boolean; index: number | null; scale: number };
   getVisibleAtomStats: () => {
     count: number;
+    xrayCount: number;
     layers: Record<string, number>;
     shells: Record<string, number>;
     centerIndex: number;
@@ -148,6 +179,7 @@ export interface DebugApi {
     visibleAtomCount: number;
     totalAtomCount: number;
     hiddenAtomIndices: number[];
+    xrayAtomIndices: number[];
     visibleSiteCount: number;
     completeVisibleSiteCount: number;
     shellSize: number;
@@ -210,10 +242,24 @@ export function bootstrap(): void {
   renderShell(root);
 
   const store = new Store();
-  const models = new Map<StructureId, CrystalModel>();
-  for (const id of STRUCTURE_IDS) models.set(id, buildCrystal(id));
-  const hcpModel = models.get('hcp');
-  if (!hcpModel) return;
+  const modelCache = new Map<string, CrystalModel>();
+  const modelKey = (id: StructureId): string =>
+    id === 'hcp' ? `hcp@${resolveHcpCOverA(store.state).toFixed(6)}` : id;
+  const modelFor = (id: StructureId): CrystalModel => {
+    const key = modelKey(id);
+    let model = modelCache.get(key);
+    if (!model) {
+      // Keep the cache bounded when the HCP c/a slider sweeps through values.
+      if (modelCache.size >= 12) {
+        for (const cacheKey of [...modelCache.keys()]) {
+          if (cacheKey.includes('@')) modelCache.delete(cacheKey);
+        }
+      }
+      model = buildCrystal(id, { hcpCOverA: resolveHcpCOverA(store.state) });
+      modelCache.set(key, model);
+    }
+    return model;
+  };
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const hud = new Hud((id) => switchStructure(id));
@@ -223,7 +269,7 @@ export function bootstrap(): void {
   // HCP-radius framing left ~18% of the stage empty. The same radius is used
   // for every structure so the atom scale stays comparable.
   const defaultFrameRadius = Math.max(
-    ...STRUCTURE_IDS.map((id) => cellWireRadius(models.get(id) ?? hcpModel)),
+    ...STRUCTURE_IDS.map((id) => cellWireRadius(buildCrystal(id))),
   );
   let viewer: Viewer;
   try {
@@ -244,7 +290,7 @@ export function bootstrap(): void {
   const labels = new LabelLayer(must<HTMLElement>('label-layer'));
   viewer.root.add(atomLayer.group, cellLayer.group, siteLayer.group, shellLayer.group);
 
-  let currentModel = models.get(store.state.structure) ?? hcpModel;
+  let currentModel = modelFor(store.state.structure);
   let panel: Panel | null = null;
   let pointerDown: { x: number; y: number; pointerId: number } | null = null;
   const ndc = new Vector2();
@@ -268,18 +314,18 @@ export function bootstrap(): void {
     if (!STRUCTURE_IDS.includes(id)) return;
     const state = store.state;
     if (state.structure === id) {
-      viewer.resetView(450);
+      resetView();
       return;
     }
     store.set({
       structure: id,
-      selectedAtomId: null,
+      selectedAtomIds: [],
       selectedSiteId: null,
       focusedSiteId: null,
       siteFilter: state.siteFilter === 'selected' ? 'all' : state.siteFilter,
     });
-    const meta = models.get(id)?.meta;
-    if (meta) hud.showToast(`${meta.abbreviation} · ${meta.name} · CN ${meta.coordinationNumber}`);
+    const meta = modelFor(id).meta;
+    hud.showToast(`${meta.abbreviation} · ${meta.name} · CN ${meta.coordinationNumber}`);
   }
 
   function centralSite(type: 'O' | 'T'): InterstitialSite | null {
@@ -317,7 +363,7 @@ export function bootstrap(): void {
       siteOpacity: 0.6,
       siteFilter: 'complete',
       siteBrowserType: type,
-      selectedAtomId: null,
+      selectedAtomIds: [],
       selectedSiteId: site?.id ?? null,
       focusedSiteId: null,
     });
@@ -357,7 +403,7 @@ export function bootstrap(): void {
       patch.siteOpacity = 0.6;
       patch.siteFilter = 'complete';
       patch.siteBrowserType = type;
-      patch.selectedAtomId = null;
+      patch.selectedAtomIds = [];
       const site = centralSite(type);
       patch.selectedSiteId = site?.id ?? null;
       patch.focusedSiteId = null;
@@ -375,21 +421,32 @@ export function bootstrap(): void {
     store.set(patch);
   }
 
-  function selectAtom(atom: Atom): void {
-    const hadFocus = Boolean(store.state.focusedSiteId);
+  /**
+   * Click selection. A plain click replaces the selection; Ctrl / Cmd / Shift
+   * inserts or removes one atom (the multi-select workflow). The primary entry
+   * of `selectedAtomIds` drives the single-atom inspector.
+   */
+  function selectAtom(atom: Atom, additive = false): void {
+    const state = store.state;
+    const ids = state.selectedAtomIds;
+    const next = additive
+      ? ids.includes(atom.id)
+        ? ids.filter((id) => id !== atom.id)
+        : [...ids, atom.id]
+      : [atom.id];
     store.set({
       editMode: true,
-      selectedAtomId: atom.id,
+      selectedAtomIds: next,
       selectedSiteId: null,
       focusedSiteId: null,
     });
-    if (hadFocus) viewer.focusTarget(null, 450);
+    if (state.focusedSiteId) viewer.focusTarget(null, 450);
   }
 
   function selectSite(site: InterstitialSite): void {
     const hadFocus = Boolean(store.state.focusedSiteId);
     store.set({
-      selectedAtomId: null,
+      selectedAtomIds: [],
       selectedSiteId: site.id,
       focusedSiteId: null,
       siteBrowserType: site.type,
@@ -421,7 +478,7 @@ export function bootstrap(): void {
     hud.hideTooltip();
     const hadFocus = Boolean(state.focusedSiteId);
     store.set({
-      selectedAtomId: null,
+      selectedAtomIds: [],
       selectedSiteId: null,
       focusedSiteId: null,
       siteFilter: state.siteFilter === 'selected' ? 'all' : state.siteFilter,
@@ -440,7 +497,7 @@ export function bootstrap(): void {
     const site = currentModel.sites.find((candidate) => candidate.id === id);
     if (!site) return;
     store.set({
-      selectedAtomId: null,
+      selectedAtomIds: [],
       selectedSiteId: site.id,
       focusedSiteId: site.id,
       siteBrowserType: site.type,
@@ -457,8 +514,8 @@ export function bootstrap(): void {
 
   function resetView(): void {
     store.set({ focusedSiteId: null });
-    viewer.resetView(450);
-    hud.showToast('视角已重置 · 统一默认方向');
+    viewer.resetViewToFit(currentViewRadius(store.state), 450);
+    hud.showToast('视角已重置 · 已按当前内容适应视图');
   }
 
   function setDisplayRadius(value: number, fit = false): void {
@@ -499,29 +556,37 @@ export function bootstrap(): void {
 
   function resetDisplay(): void {
     store.set({
-      atomDisplayRadius: 0.68,
-      displayRange: 0.62,
+      atomDisplayRadius: 0.5,
+      displayRange: 1,
       displayMode: 'range',
       followRangeForSites: true,
-      cellStyleAuto: true,
     });
-    hud.showToast('显示已重置 · 0.68r / 62% / 范围模式');
+    hud.showToast('显示已重置 · 0.50r / 100% / 范围模式');
   }
 
   /**
-   * Bounding radius of what is actually on screen now: visible atoms at the
-   * display scale plus the cell wireframe (and visible site spheres). Used by
-   * the explicit "适应视图" action and by export framing, never by sliders.
+   * Bounding radius of what is actually on screen now: solid atoms (plus the
+   * atom-xray shells outside the range) at the display scale, the cell
+   * wireframe and visible site spheres. Used by "适应视图", reset view and
+   * export framing, never by sliders.
    */
   function currentViewRadius(state: Readonly<AppState>): number {
     let radius = 0;
-    const visibility = computeAtomVisibility(currentModel.atoms, state.displayMode, state.displayRange);
+    const render = computeAtomRenderState(
+      currentModel.atoms,
+      state.displayMode,
+      state.displayRange,
+      state.atomHidden,
+      state.ghostAtoms,
+    );
     if (state.showAtoms) {
-      for (const index of visibility.indices) {
-        const atom = currentModel.atoms[index];
+      for (let i = 0; i < currentModel.atoms.length; i++) {
+        if (!render.rendered[i]) continue;
+        const atom = currentModel.atoms[i];
         radius = Math.max(
           radius,
-          Math.hypot(atom.position.x, atom.position.y, atom.position.z) + state.atomDisplayRadius,
+          Math.hypot(atom.position.x, atom.position.y, atom.position.z) +
+            state.atomDisplayRadius * resolveAtomSize(state, atom.id),
         );
       }
     }
@@ -540,7 +605,7 @@ export function bootstrap(): void {
           isSiteVisibleInDisplay(
             site,
             currentModel,
-            visibility.visible,
+            render.base,
             state.displayMode,
             state.displayRange,
             state.followRangeForSites,
@@ -573,26 +638,99 @@ export function bootstrap(): void {
     hud.showToast('已按当前可见内容适应视图');
   }
 
+  function setAtomColors(ids: string[], hex: string): void {
+    if (!isHexColor(hex)) return;
+    const known = new Set(currentModel.atoms.map((atom) => atom.id));
+    const valid = ids.filter((id) => known.has(id));
+    if (valid.length === 0) return;
+    const next = { ...store.state.atomColors };
+    for (const id of valid) next[id] = normalizeHex(hex);
+    store.set({ atomColors: next, allAtomColor: null });
+  }
+
   function setAtomColor(id: string, hex: string): boolean {
     if (!isHexColor(hex)) return false;
     if (!currentModel.atoms.some((atom) => atom.id === id)) return false;
-    store.set({ atomColors: { ...store.state.atomColors, [id]: normalizeHex(hex) } });
+    setAtomColors([id], hex);
     return true;
   }
 
-  function restoreSelectedAtom(): void {
-    const id = store.state.selectedAtomId;
-    if (!id || !store.state.atomColors[id]) return;
-    const next = { ...store.state.atomColors };
-    delete next[id];
-    store.set({ atomColors: next });
-    hud.showToast('已恢复此球默认颜色');
+  function setAtomSizes(ids: string[], size: number): void {
+    const known = new Set(currentModel.atoms.map((atom) => atom.id));
+    const valid = ids.filter((id) => known.has(id));
+    if (valid.length === 0) return;
+    const value = clampAtomSize(size);
+    const next = { ...store.state.atomSizes };
+    for (const id of valid) next[id] = value;
+    store.set({ atomSizes: next });
   }
 
-  function resetAllAtomColors(): void {
-    if (Object.keys(store.state.atomColors).length === 0) return;
-    store.set({ atomColors: {} });
-    hud.showToast('已重置全部逐球颜色');
+  function hideAtoms(ids: string[]): void {
+    const known = new Set(currentModel.atoms.map((atom) => atom.id));
+    const valid = ids.filter((id) => known.has(id));
+    if (valid.length === 0) return;
+    const next = { ...store.state.atomHidden };
+    for (const id of valid) next[id] = true;
+    store.set({
+      atomHidden: next,
+      selectedAtomIds: store.state.selectedAtomIds.filter((id) => !valid.includes(id)),
+    });
+    hud.showToast(`已隐藏 ${valid.length} 个原子 · 可在控制台「显示全部隐藏」中找回`);
+  }
+
+  function showAllHiddenAtoms(): void {
+    const count = Object.keys(store.state.atomHidden).length;
+    if (count === 0) return;
+    store.set({ atomHidden: {} });
+    hud.showToast(`已恢复 ${count} 个隐藏原子`);
+  }
+
+  function restoreAtomEdits(ids: string[]): void {
+    if (ids.length === 0) return;
+    const colors = { ...store.state.atomColors };
+    const sizes = { ...store.state.atomSizes };
+    const hidden = { ...store.state.atomHidden };
+    let removed = 0;
+    for (const id of ids) {
+      if (colors[id]) {
+        delete colors[id];
+        removed++;
+      }
+      if (sizes[id]) {
+        delete sizes[id];
+        removed++;
+      }
+      if (hidden[id]) {
+        delete hidden[id];
+        removed++;
+      }
+    }
+    if (removed === 0) {
+      hud.showToast('所选原子已是默认状态');
+      return;
+    }
+    store.set({ atomColors: colors, atomSizes: sizes, atomHidden: hidden });
+    hud.showToast(`已恢复 ${ids.length} 个原子的默认颜色 / 大小 / 可见性`);
+  }
+
+  function resetAllAtomEdits(): void {
+    if (atomEditCount(store.state) === 0 && !store.state.allAtomColor) return;
+    store.set({ atomColors: {}, atomSizes: {}, atomHidden: {}, allAtomColor: null });
+    hud.showToast('已重置全部逐球编辑与统一配色');
+  }
+
+  function setHcpCOverA(ratio: number, announce = false): void {
+    const next = clampHcpCOverA(ratio);
+    if (announce && Number.isFinite(ratio) && Math.abs(next - ratio) > 1e-9) {
+      // Scientific guard: outside this interval neighbouring layers overlap.
+      hud.showToast(
+        `c/a 已限制在 ${HCP_MIN_C_OVER_A.toFixed(3)}–${HCP_MAX_C_OVER_A.toFixed(3)}（硬球不可重叠）`,
+      );
+    }
+    if (Math.abs(next - store.state.hcpCOverA) < 1e-9) return;
+    // A stale site focus would leave the orbit target off the new lattice.
+    if (store.state.focusedSiteId) viewer.focusTarget(null, 0);
+    store.set({ hcpCOverA: next, focusedSiteId: null });
   }
 
   const actions: PanelActions = {
@@ -612,8 +750,14 @@ export function bootstrap(): void {
     setFollowSites,
     resetDisplay,
     setAtomColor,
-    restoreSelectedAtom,
-    resetAllAtomColors,
+    setAtomColors,
+    setAtomSizes,
+    hideAtoms,
+    showAllHiddenAtoms,
+    restoreAtomEdits,
+    resetAllAtomEdits,
+    setHcpCOverA,
+    clearAtomSelection: clearSelection,
   };
   panel = createPanel(store, actions, () => currentModel);
 
@@ -641,6 +785,12 @@ export function bootstrap(): void {
     };
   }
 
+  function selectedAtomsOf(state: Readonly<AppState>): Atom[] {
+    if (state.selectedAtomIds.length === 0) return [];
+    const wanted = new Set(state.selectedAtomIds);
+    return currentModel.atoms.filter((atom) => wanted.has(atom.id));
+  }
+
   function buildLabels(state: Readonly<AppState>): LabelSpec[] {
     const specs: LabelSpec[] = [];
     const visibility = computeAtomVisibility(
@@ -660,14 +810,26 @@ export function bootstrap(): void {
         });
       }
     }
-    const atom = pickSelectedAtom(state, currentModel.atoms);
-    if (atom) {
+    const selected = selectedAtomsOf(state);
+    if (selected.length === 1 && selected[0]) {
+      const atom = selected[0];
       const anchor = projectToScreen(atom.position);
       if (anchor.inView) {
         specs.push({
           id: `atom:${atom.id}`,
           text: `M · ${atomKindLabel(atom.kind)}`,
           accent: '#F6C453',
+          anchor,
+        });
+      }
+    } else if (selected.length > 1 && selected[0]) {
+      const primary = selected[0];
+      const anchor = projectToScreen(primary.position);
+      if (anchor.inView) {
+        specs.push({
+          id: 'atom:multi',
+          text: `已选 ${selected.length} 个原子`,
+          accent: '#7FE7F5',
           anchor,
         });
       }
@@ -724,7 +886,7 @@ export function bootstrap(): void {
 
   function labelsShouldShow(state: Readonly<AppState>): boolean {
     if (state.displayMode === 'shell') return true;
-    if (state.autoRotate && !state.selectedAtomId && !state.selectedSiteId) return false;
+    if (state.autoRotate && state.selectedAtomIds.length === 0 && !state.selectedSiteId) return false;
     return true;
   }
 
@@ -734,36 +896,41 @@ export function bootstrap(): void {
   }
 
   function applyScene(state: Readonly<AppState>): void {
-    const visibility = computeAtomVisibility(currentModel.atoms, state.displayMode, state.displayRange);
+    const render = computeAtomRenderState(
+      currentModel.atoms,
+      state.displayMode,
+      state.displayRange,
+      state.atomHidden,
+      state.ghostAtoms,
+    );
+    const sizes = currentModel.atoms.map((atom) => resolveAtomSize(state, atom.id));
+    const shell = computeAtomVisibility(currentModel.atoms, state.displayMode, state.displayRange).shell;
     atomLayer.setColors(
       currentModel.atoms.map((atom) => resolveAtomColor(atom, currentModel.meta, state)),
     );
-    atomLayer.setDisplay(visibility.visible, state.atomDisplayRadius);
-    atomLayer.setGhost(state.ghostAtoms);
+    atomLayer.setDisplay(render.solid, render.xray, state.atomDisplayRadius, sizes);
     atomLayer.setVisible(state.showAtoms);
-    const selectedIndex = state.selectedAtomId
-      ? currentModel.atoms.findIndex((atom) => atom.id === state.selectedAtomId)
-      : -1;
-    atomLayer.setSelected(
-      selectedIndex >= 0 && visibility.visible[selectedIndex] ? selectedIndex : null,
-    );
-    atomLayer.setShellCenter(
-      state.displayMode === 'shell' ? visibility.shell.centerIndex : null,
-    );
+    const selectedIndices = state.selectedAtomIds
+      .map((id) => currentModel.atoms.findIndex((atom) => atom.id === id))
+      .filter((index) => index >= 0);
+    atomLayer.setSelection(selectedIndices);
+    atomLayer.setShellCenter(state.displayMode === 'shell' ? shell.centerIndex : null);
 
     const cellStyle = resolveCellStyle(state);
     cellLayer.setVisible(state.showCell);
     cellLayer.setDisplayRadius(state.atomDisplayRadius);
-    cellLayer.setAtomVisibility(visibility.visible);
+    cellLayer.setAtomVisibility(render.rendered);
     cellLayer.setStyle(cellStyle.width, cellStyle.brightness);
     cellLayer.setXray(state.cellXray);
 
     shellLayer.update(
       currentModel,
-      visibility.shell,
+      shell,
       state.displayMode === 'shell' && state.showPolyhedron,
     );
-
+    const siteAtomVisible = render.base.map(
+      (value, index) => value && state.atomHidden[currentModel.atoms[index]?.id ?? ''] !== true,
+    );
     siteLayer.update({
       showO: state.showO,
       showT: state.showT,
@@ -772,7 +939,7 @@ export function bootstrap(): void {
       scale: state.siteScale,
       displayScale: state.atomDisplayRadius,
       opacity: state.siteOpacity,
-      atomVisible: visibility.visible,
+      atomVisible: siteAtomVisible,
       displayMode: state.displayMode,
       displayRange: state.displayRange,
       followRange: state.followRangeForSites,
@@ -787,17 +954,22 @@ export function bootstrap(): void {
     viewer.setAutoRotateSpeed(state.autoRotateSpeed);
     viewer.setSelectionPaused(
       Boolean(
-        state.selectedAtomId ||
+        state.selectedAtomIds.length > 0 ||
           state.selectedSiteId ||
           state.focusedSiteId ||
           state.displayMode === 'shell',
       ),
     );
 
+    updateDock(state, render);
+    updateAtomCard(state);
+
     const legendO = document.getElementById('legend-o-row');
     const legendT = document.getElementById('legend-t-row');
+    const legendGhost = document.getElementById('legend-ghost-row');
     if (legendO) legendO.hidden = !state.showO;
     if (legendT) legendT.hidden = !state.showT;
+    if (legendGhost) legendGhost.hidden = render.xrayCount === 0;
 
     canvas.classList.toggle('is-editing', state.editMode);
 
@@ -817,8 +989,8 @@ export function bootstrap(): void {
     hud.update(state, currentModel);
   }
 
-  function rebuildScene(duration: number): void {
-    currentModel = models.get(store.state.structure) ?? currentModel;
+  function rebuildScene(duration: number, keepOrientation = false): void {
+    currentModel = modelFor(store.state.structure);
     atomLayer.build(currentModel);
     cellLayer.build(currentModel);
     cellLayer.setResolution(canvas.clientWidth, canvas.clientHeight);
@@ -828,7 +1000,14 @@ export function bootstrap(): void {
     labels.clear();
     hud.hideTooltip();
     atomLayer.setHover(null);
-    viewer.resetView(duration);
+    const radius = currentViewRadius(store.state);
+    if (keepOrientation) {
+      // The HCP c/a sandbox changes geometry without touching how the user is
+      // looking at it, so keep the orbit direction and only re-fit the zoom.
+      viewer.fitView(radius, duration);
+    } else {
+      viewer.resetViewToFit(radius, duration);
+    }
   }
 
   function visibleSiteIds(state: Readonly<AppState>): Set<string> {
@@ -854,8 +1033,14 @@ export function bootstrap(): void {
 
   store.subscribe((state, patch) => {
     if (patch.structure) rebuildScene(reducedMotion ? 0 : 450);
+    if (patch.hcpCOverA !== undefined && state.structure === 'hcp') {
+      // Scientific sandbox: recompute the HCP lattice in place, then keep the
+      // orbit direction and re-fit the zoom (never silently reset the camera).
+      rebuildScene(reducedMotion ? 0 : 120, true);
+    }
     if (
       patch.structure ||
+      patch.hcpCOverA !== undefined ||
       patch.showO === false ||
       patch.showT === false ||
       patch.showAtoms === false ||
@@ -869,13 +1054,11 @@ export function bootstrap(): void {
       atomLayer.setHover(null);
     }
 
-    const visibility = computeAtomVisibility(currentModel.atoms, state.displayMode, state.displayRange);
-    if (state.selectedAtomId) {
-      const index = currentModel.atoms.findIndex((atom) => atom.id === state.selectedAtomId);
-      if (index < 0 || !visibility.visible[index]) {
-        store.set({ selectedAtomId: null });
-        return;
-      }
+    const knownAtoms = new Set(currentModel.atoms.map((atom) => atom.id));
+    const validSelection = state.selectedAtomIds.filter((id) => knownAtoms.has(id));
+    if (validSelection.length !== state.selectedAtomIds.length) {
+      store.set({ selectedAtomIds: validSelection });
+      return;
     }
     if (state.selectedSiteId && !visibleSiteIds(state).has(state.selectedSiteId)) {
       const hadFocus = Boolean(state.focusedSiteId);
@@ -890,7 +1073,231 @@ export function bootstrap(): void {
     sync(state);
   });
 
-  // pointer helpers -------------------------------------------------
+  // persistent corner menu (常驻菜单) + color popover -----------------
+  type DockPopoverKind = 'color' | null;
+  type ColorMode = AppState['colorMode'];
+  let dockPopover: DockPopoverKind = null;
+  const popoverEl = must<HTMLElement>('qd-popover');
+  const dockEl = must<HTMLElement>('quick-dock');
+
+  const COLOR_MODE_LABELS: { id: ColorMode; label: string }[] = [
+    { id: 'radial', label: '内外层' },
+    { id: 'stacking', label: '堆垛层' },
+    { id: 'gold', label: '纯金' },
+  ];
+
+  function byIdOptional<T extends HTMLElement>(id: string): T | null {
+    return document.getElementById(id) as T | null;
+  }
+
+  function closeDockPopover(): boolean {
+    if (!dockPopover) return false;
+    dockPopover = null;
+    popoverEl.hidden = true;
+    popoverEl.innerHTML = '';
+    byIdOptional('qd-color')?.setAttribute('aria-expanded', 'false');
+    return true;
+  }
+
+  function dockPopoverMarkup(): string {
+    const state = store.state;
+    const uniform = state.allAtomColor;
+    const dot = (hex: string) => `<i class="qd-dot" style="background:${hex}"></i>`;
+    const modes = COLOR_MODE_LABELS.map(
+      (mode) =>
+        `<button class="qd-mode" type="button" data-qd-mode="${mode.id}" aria-pressed="${state.colorMode === mode.id}">${mode.label}</button>`,
+    ).join('');
+    return `
+      <div class="qd-pop-head"><span>所有小球颜色</span><button class="qd-pop-close" type="button" id="qd-pop-close" aria-label="关闭">${icon('close', 14)}</button></div>
+      <div class="qd-pop-modes" role="group" aria-label="配色模式">${modes}</div>
+      <label class="qd-pop-row" for="qd-color-inner"><span class="qd-pop-key">${dot(state.colorInner)}内层（古铜）</span><input type="color" id="qd-color-inner" value="${state.colorInner}" aria-label="内层颜色"></label>
+      <label class="qd-pop-row" for="qd-color-outer"><span class="qd-pop-key">${dot(state.colorOuter)}外层（金色）</span><input type="color" id="qd-color-outer" value="${state.colorOuter}" aria-label="外层颜色"></label>
+      <label class="qd-pop-row" for="qd-color-input"><span>统一色</span><input type="color" id="qd-color-input" value="${uniform ?? state.colorOuter}" aria-label="统一色"></label>
+      <div class="btn-row">
+        <button class="btn-small" id="qd-color-reset" type="button">恢复默认配色</button>
+        <button class="btn-small" id="qd-color-clear" type="button"${uniform ? '' : ' disabled'}>取消统一色</button>
+      </div>
+      <p class="qd-pop-note">内外层按径向 ${RADIAL_SPLIT.toFixed(2)}R 划分（外层金色 / 内层古铜）；逐球自定义颜色始终优先，统一色会覆盖内外层与堆垛层。</p>`;
+  }
+
+  function refreshDockPopover(): void {
+    if (!dockPopover) return;
+    popoverEl.innerHTML = dockPopoverMarkup();
+    bindDockPopover();
+  }
+
+  function bindDockPopover(): void {
+    byIdOptional('qd-pop-close')?.addEventListener('click', () => closeDockPopover());
+    for (const button of popoverEl.querySelectorAll<HTMLButtonElement>('[data-qd-mode]')) {
+      button.addEventListener('click', () => {
+        store.set({ colorMode: button.dataset.qdMode as ColorMode, allAtomColor: null });
+        refreshDockPopover();
+      });
+    }
+    const inner = byIdOptional<HTMLInputElement>('qd-color-inner');
+    inner?.addEventListener('input', () => {
+      store.set({ colorInner: inner.value.toUpperCase(), allAtomColor: null });
+    });
+    const outer = byIdOptional<HTMLInputElement>('qd-color-outer');
+    outer?.addEventListener('input', () => {
+      store.set({ colorOuter: outer.value.toUpperCase(), allAtomColor: null });
+    });
+    const uniform = byIdOptional<HTMLInputElement>('qd-color-input');
+    uniform?.addEventListener('input', () => {
+      store.set({ allAtomColor: uniform.value.toUpperCase() });
+    });
+    byIdOptional('qd-color-reset')?.addEventListener('click', () => {
+      store.set({
+        colorInner: DEFAULT_COLOR_INNER,
+        colorOuter: DEFAULT_COLOR_OUTER,
+        colorMode: 'radial',
+        allAtomColor: null,
+      });
+      refreshDockPopover();
+      hud.showToast('已恢复默认配色：外层金色 / 内层古铜');
+    });
+    byIdOptional('qd-color-clear')?.addEventListener('click', () => {
+      store.set({ allAtomColor: null });
+      refreshDockPopover();
+    });
+  }
+
+  function openDockPopover(): void {
+    if (dockPopover) {
+      closeDockPopover();
+      return;
+    }
+    dockPopover = 'color';
+    popoverEl.innerHTML = dockPopoverMarkup();
+    popoverEl.hidden = false;
+    bindDockPopover();
+    byIdOptional('qd-color')?.setAttribute('aria-expanded', 'true');
+    popoverEl.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true });
+  }
+
+  function updateDock(state: Readonly<AppState>, render: AtomRenderState): void {
+    const setToggle = (id: string, on: boolean) => {
+      const el = byIdOptional(id);
+      el?.setAttribute('aria-checked', String(on));
+      el?.classList.toggle('is-on', on);
+    };
+    setToggle('qd-xray', state.cellXray);
+    setToggle('qd-ghost', state.ghostAtoms);
+    setToggle('qd-atoms', state.showAtoms);
+    const swatch = byIdOptional('qd-swatch');
+    if (swatch) {
+      swatch.style.background = state.allAtomColor
+        ? state.allAtomColor
+        : `linear-gradient(135deg, ${state.colorInner} 0 48%, ${state.colorOuter} 52% 100%)`;
+    }
+    const status = byIdOptional('qd-status');
+    if (status) {
+      status.textContent = `${state.atomDisplayRadius.toFixed(2)}r · 范围 ${Math.round(
+        state.displayRange * 100,
+      )}% · 实心 ${render.solidCount} · 透视 ${render.xrayCount}`;
+    }
+    // Keep an open popover in sync without re-rendering it: replacing the DOM
+    // mid-drag would kill the active color picker.
+    if (dockPopover === 'color') {
+      const syncColor = (id: string, value: string) => {
+        const input = byIdOptional<HTMLInputElement>(id);
+        if (input && document.activeElement !== input) input.value = value;
+      };
+      syncColor('qd-color-inner', state.colorInner);
+      syncColor('qd-color-outer', state.colorOuter);
+      syncColor('qd-color-input', state.allAtomColor ?? state.colorOuter);
+      const dots = popoverEl.querySelectorAll<HTMLElement>('.qd-dot');
+      if (dots[0]) dots[0].style.background = state.colorInner;
+      if (dots[1]) dots[1].style.background = state.colorOuter;
+      for (const button of popoverEl.querySelectorAll<HTMLButtonElement>('[data-qd-mode]')) {
+        button.setAttribute('aria-pressed', String(button.dataset.qdMode === state.colorMode));
+      }
+      const clear = byIdOptional<HTMLButtonElement>('qd-color-clear');
+      if (clear) clear.disabled = !state.allAtomColor;
+    }
+  }
+
+  function updateAtomCard(state: Readonly<AppState>): void {
+    const card = byIdOptional<HTMLElement>('atom-card');
+    if (!card) return;
+    const selected = selectedAtomsOf(state);
+    if (selected.length === 0) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    const primary = selected[0];
+    byIdOptional<HTMLElement>('atom-card-count')!.textContent = String(selected.length);
+    byIdOptional<HTMLElement>('atom-card-meta')!.textContent =
+      selected.length > 1
+        ? `多选 · ${currentModel.meta.abbreviation} · 混合晶位`
+        : `${currentModel.meta.abbreviation} · ${atomKindLabel(primary.kind)} · ${atomLayerLabel(primary, state.structure)}`;
+    const colorInput = byIdOptional<HTMLInputElement>('atom-card-color');
+    const sizeInput = byIdOptional<HTMLInputElement>('atom-card-size');
+    const sizeOut = byIdOptional<HTMLElement>('atom-card-size-out');
+    const active = document.activeElement;
+    if (colorInput && active !== colorInput) {
+      colorInput.value = resolveAtomColor(primary, currentModel.meta, state);
+    }
+    if (sizeInput && active !== sizeInput) {
+      const size = Math.round(resolveAtomSize(state, primary.id) * 100);
+      sizeInput.value = String(size);
+      if (sizeOut) sizeOut.textContent = `${size}%`;
+    }
+    const hideBtn = byIdOptional<HTMLButtonElement>('atom-card-hide');
+    if (hideBtn) hideBtn.textContent = `隐藏所选 (${selected.length})`;
+  }
+
+  // persistent corner menu wiring ------------------------------------
+  byIdOptional('qd-reset')?.addEventListener('click', resetView);
+  byIdOptional('qd-fit')?.addEventListener('click', fitView);
+  byIdOptional('qd-color')?.addEventListener('click', () => openDockPopover());
+  byIdOptional('qd-xray')?.addEventListener('click', () => {
+    store.set({ cellXray: !store.state.cellXray });
+  });
+  byIdOptional('qd-ghost')?.addEventListener('click', () => {
+    store.set({ ghostAtoms: !store.state.ghostAtoms });
+  });
+  byIdOptional('qd-atoms')?.addEventListener('click', () => {
+    store.set({ showAtoms: !store.state.showAtoms });
+  });
+  document.addEventListener('pointerdown', (event) => {
+    if (!dockPopover) return;
+    const target = event.target as Node | null;
+    if (target && dockEl.contains(target)) return;
+    closeDockPopover();
+  });
+
+  // floating atom inspector wiring ----------------------------------
+  byIdOptional('atom-card-clear')?.addEventListener('click', clearSelection);
+  byIdOptional<HTMLInputElement>('atom-card-color')?.addEventListener('input', (event) => {
+    const ids = store.state.selectedAtomIds;
+    if (ids.length === 0) return;
+    setAtomColors(ids, (event.target as HTMLInputElement).value.toUpperCase());
+  });
+  byIdOptional('atom-card-color-default')?.addEventListener('click', () => {
+    const ids = store.state.selectedAtomIds;
+    if (ids.length === 0) return;
+    const next = { ...store.state.atomColors };
+    for (const id of ids) delete next[id];
+    store.set({ atomColors: next });
+    hud.showToast('已恢复所选原子的默认颜色');
+  });
+  const cardSizeInput = byIdOptional<HTMLInputElement>('atom-card-size');
+  cardSizeInput?.addEventListener('input', () => {
+    const ids = store.state.selectedAtomIds;
+    if (ids.length === 0) return;
+    setAtomSizes(ids, Number(cardSizeInput.value) / 100);
+    const out = byIdOptional<HTMLElement>('atom-card-size-out');
+    if (out) out.textContent = `${cardSizeInput.value}%`;
+  });
+  byIdOptional('atom-card-hide')?.addEventListener('click', () => {
+    hideAtoms(store.state.selectedAtomIds);
+  });
+  byIdOptional('atom-card-restore')?.addEventListener('click', () => {
+    restoreAtomEdits(store.state.selectedAtomIds);
+  });
+
   function ndcFrom(clientX: number, clientY: number): Vector2 {
     const rect = canvas.getBoundingClientRect();
     ndc.set(
@@ -901,13 +1308,16 @@ export function bootstrap(): void {
   }
 
   function atomAt(clientX: number, clientY: number): Atom | null {
-    if (!store.state.editMode || !store.state.showAtoms) return null;
-    const mesh = atomLayer.instancedMesh;
-    if (!mesh) return null;
-    const hits = viewer.pick(ndcFrom(clientX, clientY), [mesh]);
+    if (!store.state.showAtoms) return null;
+    const targets = atomLayer.pickTargets;
+    if (targets.length === 0) return null;
+    const hits = viewer.pick(ndcFrom(clientX, clientY), targets);
     for (const hit of hits) {
       if (hit.instanceId === undefined) continue;
-      if (!atomLayer.isVisibleIndex(hit.instanceId)) continue;
+      // Solid atoms win over atom-xray shells because the solid layer is first
+      // in the pick-target list; both are selectable so the range-hidden shell
+      // stays editable.
+      if (!atomLayer.isRenderedIndex(hit.instanceId)) continue;
       return currentModel.atoms[hit.instanceId] ?? null;
     }
     return null;
@@ -931,7 +1341,7 @@ export function bootstrap(): void {
     if (site) {
       atomLayer.setHover(null);
       labels.setVisible(false);
-      canvas.classList.toggle('is-pointing', !state.editMode);
+      canvas.classList.add('is-pointing');
       const shape = siteShapeLabel(site, state.structure);
       const visibility = computeAtomVisibility(currentModel.atoms, state.displayMode, state.displayRange);
       const neighborsVisible = siteNeighborsFullyVisible(site, visibility.visible);
@@ -955,9 +1365,12 @@ export function bootstrap(): void {
       const index = currentModel.atoms.indexOf(atom);
       atomLayer.setHover(index);
       labels.setVisible(false);
+      canvas.classList.add('is-pointing');
       const override = state.atomColors[atom.id];
+      const sizeOverride = state.atomSizes[atom.id];
+      const isSelected = state.selectedAtomIds.includes(atom.id);
       let avoid: DOMRect | null = null;
-      if (state.selectedAtomId === atom.id) {
+      if (isSelected) {
         const diameter = atomScreenDiameter(index) ?? 100;
         const point = screenPosition(atom.position);
         avoid = new DOMRect(
@@ -971,7 +1384,11 @@ export function bootstrap(): void {
         {
           tag: `M · ${atomKindLabel(atom.kind)} · ${currentModel.meta.abbreviation}`,
           frac: fracText(atom.fractional.x, atom.fractional.y, atom.fractional.z, 4),
-          meta: `${atomLayerLabel(atom, state.structure)}${override ? ' · 自定义颜色' : ''} · 点击选中`,
+          meta: `${atomLayerLabel(atom, state.structure)}${
+            override ? ' · 自定义颜色' : ''
+          }${sizeOverride ? ` · 大小 ${Math.round(sizeOverride * 100)}%` : ''}${
+            isSelected ? ' · 已选中' : ' · 单击选中 / Ctrl+单击多选'
+          }`,
         },
         clientX,
         clientY,
@@ -981,6 +1398,7 @@ export function bootstrap(): void {
       atomLayer.setHover(null);
       hud.hideTooltip();
       labels.setVisible(labelsShouldShow(state));
+      canvas.classList.remove('is-pointing');
     }
   }
 
@@ -1006,10 +1424,11 @@ export function bootstrap(): void {
     }
     const atom = atomAt(event.clientX, event.clientY);
     if (atom) {
-      selectAtom(atom);
+      selectAtom(atom, event.ctrlKey || event.metaKey || event.shiftKey);
       return;
     }
-    if (store.state.selectedAtomId || store.state.selectedSiteId || store.state.focusedSiteId) {
+    closeDockPopover();
+    if (store.state.selectedAtomIds.length > 0 || store.state.selectedSiteId || store.state.focusedSiteId) {
       clearSelection();
     }
   }
@@ -1040,6 +1459,7 @@ export function bootstrap(): void {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
 
     if (event.key === 'Escape') {
+      if (closeDockPopover()) return;
       if (panel?.isSheetOpen()) panel.closeSheet();
       else clearSelection();
       return;
@@ -1094,7 +1514,6 @@ export function bootstrap(): void {
   must<HTMLButtonElement>('auto-rotate-toggle').addEventListener('click', () => {
     store.set({ autoRotate: !store.state.autoRotate });
   });
-  must<HTMLButtonElement>('reset-btn').addEventListener('click', resetView);
   window.addEventListener('resize', () => {
     cellLayer.setResolution(canvas.clientWidth, canvas.clientHeight);
     shellLayer.setResolution(canvas.clientWidth, canvas.clientHeight);
@@ -1110,11 +1529,15 @@ export function bootstrap(): void {
       return {
         structure: state.structure,
         colorMode: state.colorMode,
-        selectedAtomId: state.selectedAtomId,
+        colorInner: state.colorInner,
+        colorOuter: state.colorOuter,
+        selectedAtomId: state.selectedAtomIds[0] ?? null,
+        selectedAtomIds: state.selectedAtomIds.slice(),
         selectedSiteId: state.selectedSiteId,
         focusedSiteId: state.focusedSiteId,
         editMode: state.editMode,
         autoRotate: state.autoRotate,
+        autoRotateSpeed: state.autoRotateSpeed,
         showCell: state.showCell,
         cellXray: state.cellXray,
         cellLineWidth: state.cellLineWidth,
@@ -1133,6 +1556,10 @@ export function bootstrap(): void {
         siteFilter: state.siteFilter,
         siteBrowserType: state.siteBrowserType,
         atomColors: { ...state.atomColors },
+        atomHidden: { ...state.atomHidden },
+        atomSizes: { ...state.atomSizes },
+        allAtomColor: state.allAtomColor,
+        hcpCOverA: state.hcpCOverA,
         background: state.background,
       };
     },
@@ -1148,6 +1575,37 @@ export function bootstrap(): void {
       return true;
     },
     setAtomColor,
+    getSelectedAtomIds: () => store.state.selectedAtomIds.slice(),
+    setAtomHidden: (ids, hidden) => {
+      if (hidden) hideAtoms(ids);
+      else restoreAtomEdits(ids);
+    },
+    setAtomSize: (ids, size) => setAtomSizes(ids, size),
+    clearSelection: () => clearSelection(),
+    setHcpCOverA: (ratio) => {
+      if (store.state.structure !== 'hcp') return false;
+      setHcpCOverA(ratio);
+      return true;
+    },
+    getAtomRenderInfo: () => {
+      const state = store.state;
+      const render = computeAtomRenderState(
+        currentModel.atoms,
+        state.displayMode,
+        state.displayRange,
+        state.atomHidden,
+        state.ghostAtoms,
+      );
+      let rendered = 0;
+      for (const value of render.rendered) if (value) rendered++;
+      return {
+        solid: render.solidCount,
+        xray: render.xrayCount,
+        rendered,
+        hidden: currentModel.atoms.length - rendered,
+      };
+    },
+    isAtomRendered: (index) => atomLayer.isRenderedIndex(index),
     getCamera: () => viewer.getCameraSnapshot(),
     setAutoRotate: (enabled) => store.set({ autoRotate: enabled }),
     setEditMode: (enabled) => store.set({ editMode: enabled }),
@@ -1212,14 +1670,23 @@ export function bootstrap(): void {
     getShellVisualInfo: () => shellLayer.getInfo(),
     getShellRingInfo: () => atomLayer.getShellRingInfo(),
     getVisibleAtomStats: () => {
+      const state = store.state;
       const visibility = computeAtomVisibility(
         currentModel.atoms,
-        store.state.displayMode,
-        store.state.displayRange,
+        state.displayMode,
+        state.displayRange,
+      );
+      const render = computeAtomRenderState(
+        currentModel.atoms,
+        state.displayMode,
+        state.displayRange,
+        state.atomHidden,
+        state.ghostAtoms,
       );
       const layers: Record<string, number> = {};
       const shells: Record<string, number> = {};
       for (const index of visibility.indices) {
+        if (!render.solid[index]) continue;
         const atom = currentModel.atoms[index];
         layers[String(atom.layer)] = (layers[String(atom.layer)] ?? 0) + 1;
         const distance = Math.hypot(
@@ -1232,7 +1699,8 @@ export function bootstrap(): void {
       }
       const center = visibility.shell.centerAtom;
       return {
-        count: visibility.count,
+        count: render.solidCount,
+        xrayCount: render.xrayCount,
         layers,
         shells,
         centerIndex: visibility.shell.centerIndex,
@@ -1256,17 +1724,27 @@ export function bootstrap(): void {
         state.displayMode,
         state.displayRange,
       );
+      const render = computeAtomRenderState(
+        currentModel.atoms,
+        state.displayMode,
+        state.displayRange,
+        state.atomHidden,
+        state.ghostAtoms,
+      );
       const counts = siteLayer.getVisibleCounts();
       const hidden: number[] = [];
-      for (let i = 0; i < visibility.visible.length; i++) {
-        if (!visibility.visible[i]) hidden.push(i);
+      const xray: number[] = [];
+      for (let i = 0; i < render.rendered.length; i++) {
+        if (!render.rendered[i]) hidden.push(i);
+        else if (render.xray[i]) xray.push(i);
       }
       const atomInfo = atomLayer.getDisplayInfo();
       return {
         displayRadius: state.atomDisplayRadius,
-        visibleAtomCount: visibility.count,
+        visibleAtomCount: render.solidCount,
         totalAtomCount: currentModel.atoms.length,
         hiddenAtomIndices: hidden,
+        xrayAtomIndices: xray,
         visibleSiteCount: counts.O + counts.T,
         completeVisibleSiteCount: counts.completeO + counts.completeT,
         shellSize: visibility.shell.coordination + (visibility.shell.centerIndex >= 0 ? 1 : 0),
@@ -1354,7 +1832,13 @@ export function bootstrap(): void {
     if (rect.width < 2 || rect.height < 2 || currentModel.atoms.length === 0 || !state.showAtoms) {
       return null;
     }
-    const visibility = computeAtomVisibility(currentModel.atoms, state.displayMode, state.displayRange);
+    const render = computeAtomRenderState(
+      currentModel.atoms,
+      state.displayMode,
+      state.displayRange,
+      state.atomHidden,
+      state.ghostAtoms,
+    );
     viewer.root.updateMatrixWorld(true);
     const right = new Vector3().setFromMatrixColumn(viewer.camera.matrixWorld, 0);
     const up = new Vector3().setFromMatrixColumn(viewer.camera.matrixWorld, 1);
@@ -1362,15 +1846,15 @@ export function bootstrap(): void {
     let top = Infinity;
     let rightEdge = -Infinity;
     let bottom = -Infinity;
-    for (const index of visibility.indices) {
+    for (let index = 0; index < currentModel.atoms.length; index++) {
+      if (!render.solid[index]) continue;
       const atom = currentModel.atoms[index];
+      const radius = state.atomDisplayRadius * resolveAtomSize(state, atom.id);
       const centre = viewer.root.localToWorld(
         new Vector3(atom.position.x, atom.position.y, atom.position.z),
       );
       for (const offset of [right, up, right.clone().negate(), up.clone().negate()]) {
-        const point = viewportPoint(
-          centre.clone().addScaledVector(offset, state.atomDisplayRadius),
-        );
+        const point = viewportPoint(centre.clone().addScaledVector(offset, radius));
         left = Math.min(left, point.x);
         top = Math.min(top, point.y);
         rightEdge = Math.max(rightEdge, point.x);
@@ -1400,14 +1884,31 @@ export function bootstrap(): void {
     const rect = canvas.getBoundingClientRect();
     const state = store.state;
     if (!state.showAtoms || rect.width < 2 || rect.height < 2) return [];
-    const visibility = computeAtomVisibility(currentModel.atoms, state.displayMode, state.displayRange);
+    const render = computeAtomRenderState(
+      currentModel.atoms,
+      state.displayMode,
+      state.displayRange,
+      state.atomHidden,
+      state.ghostAtoms,
+    );
     viewer.root.updateMatrixWorld(true);
     const right = new Vector3().setFromMatrixColumn(viewer.camera.matrixWorld, 0);
     const up = new Vector3().setFromMatrixColumn(viewer.camera.matrixWorld, 1);
-    const radius = atomLayer.getDisplayRadius();
     const offsets = [right, up, right.clone().negate(), up.clone().negate()];
-    return visibility.indices.map((index) => {
+    const out: Array<{
+      index: number;
+      x: number;
+      y: number;
+      radius: number;
+      left: number;
+      right: number;
+      top: number;
+      bottom: number;
+    }> = [];
+    for (let index = 0; index < currentModel.atoms.length; index++) {
+      if (!render.solid[index]) continue;
       const atom = currentModel.atoms[index];
+      const radius = atomLayer.getDisplaySize(index);
       const centre = viewer.root.localToWorld(
         new Vector3(atom.position.x, atom.position.y, atom.position.z),
       );
@@ -1417,7 +1918,7 @@ export function bootstrap(): void {
         const edge = viewportPoint(centre.clone().addScaledVector(offset, radius));
         extent = Math.max(extent, Math.hypot(edge.x - point.x, edge.y - point.y));
       }
-      return {
+      out.push({
         index,
         x: point.x,
         y: point.y,
@@ -1426,19 +1927,20 @@ export function bootstrap(): void {
         right: point.x + extent,
         top: point.y - extent,
         bottom: point.y + extent,
-      };
-    });
+      });
+    }
+    return out;
   }
 
   function atomScreenDiameter(index: number): number | null {
     const atom = currentModel.atoms[index];
-    if (!atom || !atomLayer.isVisibleIndex(index)) return null;
+    if (!atom || !atomLayer.isRenderedIndex(index)) return null;
     viewer.root.updateMatrixWorld(true);
     const centre = viewer.root.localToWorld(
       new Vector3(atom.position.x, atom.position.y, atom.position.z),
     );
     const right = new Vector3().setFromMatrixColumn(viewer.camera.matrixWorld, 0);
-    const radius = atomLayer.getDisplayRadius();
+    const radius = atomLayer.getDisplaySize(index);
     const a = viewportPoint(centre.clone().addScaledVector(right, radius));
     const b = viewportPoint(centre.clone().addScaledVector(right, -radius));
     return Math.hypot(a.x - b.x, a.y - b.y);

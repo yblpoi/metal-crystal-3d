@@ -4,6 +4,7 @@ import { minPairDistance } from '../src/crystal/neighbors';
 import {
   clampDisplayRadius,
   clampDisplayRange,
+  computeAtomRenderState,
   computeAtomVisibility,
   firstCoordinationShell,
   isSiteVisibleInDisplay,
@@ -29,8 +30,8 @@ describe('display-only visibility model', () => {
       expect(clampDisplayRange(2)).toBe(1);
     }
     const defaults = createDefaultState();
-    expect(defaults.atomDisplayRadius).toBe(0.68);
-    expect(defaults.displayRange).toBe(0.62);
+    expect(defaults.atomDisplayRadius).toBe(0.5);
+    expect(defaults.displayRange).toBe(1);
     expect(defaults.displayMode).toBe('range');
     expect(defaults.followRangeForSites).toBe(true);
   });
@@ -156,5 +157,42 @@ describe('display-only visibility model', () => {
       );
       expect(unfollowed.length, id).toBe(model.sites.length);
     }
+  });
+
+  it('5. range-hidden atoms become atom-xray ghosts instead of disappearing', () => {
+    for (const id of IDS) {
+      const model = models[id];
+      const render = computeAtomRenderState(model.atoms, 'range', 0.62);
+      const solidExpected = computeAtomVisibility(model.atoms, 'range', 0.62).count;
+      expect(render.solidCount, id).toBe(solidExpected);
+      expect(render.solidCount + render.xrayCount, id).toBe(model.atoms.length);
+      for (let i = 0; i < model.atoms.length; i++) {
+        expect(render.solid[i] !== render.xray[i], `${id} atom ${i}`).toBe(true);
+        expect(render.rendered[i], `${id} atom ${i}`).toBe(true);
+      }
+    }
+
+    // 'all' never produces ghosts, 100 % range is identical to 'all'.
+    const all = computeAtomRenderState(models.fcc.atoms, 'all', 0.62);
+    expect(all.xrayCount).toBe(0);
+    expect(all.solidCount).toBe(63);
+    const fullRange = computeAtomRenderState(models.fcc.atoms, 'range', 1);
+    expect(fullRange.xrayCount).toBe(0);
+    expect(fullRange.solidCount).toBe(63);
+
+    // Explicitly hidden atoms leave both layers.
+    const hiddenId = models.fcc.atoms[0].id;
+    const withHidden = computeAtomRenderState(models.fcc.atoms, 'range', 0.62, {
+      [hiddenId]: true,
+    });
+    expect(withHidden.rendered[0]).toBe(false);
+    expect(withHidden.solid[0]).toBe(false);
+    expect(withHidden.xray[0]).toBe(false);
+
+    // The global atom-xray toggle moves every surviving atom into the ghost
+    // layer instead of double-rendering it.
+    const ghost = computeAtomRenderState(models.fcc.atoms, 'range', 0.62, {}, true);
+    expect(ghost.solidCount).toBe(0);
+    expect(ghost.xrayCount).toBe(computeAtomVisibility(models.fcc.atoms, 'range', 0.62).count);
   });
 });
