@@ -2,6 +2,7 @@ import type {
   Atom,
   AtomKind,
   BasisAtom,
+  CellRepeat,
   CrystalModel,
   InterstitialSite,
   SiteSeed,
@@ -56,6 +57,8 @@ export function clampHcpCOverA(value: number): number {
 export interface CrystalParams {
   /** HCP c/a ratio; cubic structures ignore it. */
   hcpCOverA?: number;
+  /** Cubic cluster size: 1×1×1 conventional cell or 2×2×2 supercell (default 2). */
+  cellRepeat?: CellRepeat;
 }
 
 export interface HcpLattice {
@@ -285,19 +288,21 @@ function finalizeAtoms(id: StructureId, raws: RawAtom[]): Atom[] {
 /* ------------------------------------------------------------------ */
 
 /**
- * FCC, N = 2 conventional cells.
- * Half-lattice integer coordinates (p,q,r) in [0,4], p+q+r even -> 63 sites.
- * Exactly-two-odd half-coordinates = face centres, all-even = corners.
+ * FCC, repeat = 2 by default (2×2×2 conventional cells, 63 atoms).
+ * Half-lattice integer coordinates (p,q,r) in [0,2*repeat], p+q+r even;
+ * exactly-two-odd half-coordinates = face centres, all-even = corners.
+ * 1×1×1 gives 8 corners + 6 face centres = 14 atoms.
  */
-function buildFccAtoms(): Atom[] {
+function buildFccAtoms(repeat: number = 2): Atom[] {
   const a = FCC_A;
   const step = a / 2;
-  const shift = a; // centre of [0, 2a]^3
+  const shift = (repeat * a) / 2; // centre of [0, repeat*a]^3
+  const limit = 2 * repeat;
   const raws: RawAtom[] = [];
 
-  for (let p = 0; p <= 4; p++) {
-    for (let q = 0; q <= 4; q++) {
-      for (let r = 0; r <= 4; r++) {
+  for (let p = 0; p <= limit; p++) {
+    for (let q = 0; q <= limit; q++) {
+      for (let r = 0; r <= limit; r++) {
         if ((p + q + r) % 2 !== 0) continue;
         const isCorner = p % 2 === 0 && q % 2 === 0 && r % 2 === 0;
         raws.push({
@@ -317,17 +322,18 @@ function buildFccAtoms(): Atom[] {
 }
 
 /**
- * BCC, N = 2 conventional cells.
- * 3^3 = 27 corner sites + 2^3 = 8 body centres = 35 atoms.
+ * BCC, repeat = 2 by default (2×2×2 conventional cells, 35 atoms).
+ * (repeat+1)^3 corner sites + repeat^3 body centres.
+ * 1×1×1 gives 8 corners + 1 body centre = 9 atoms.
  */
-function buildBccAtoms(): Atom[] {
+function buildBccAtoms(repeat: number = 2): Atom[] {
   const a = BCC_A;
-  const shift = a;
+  const shift = (repeat * a) / 2;
   const raws: RawAtom[] = [];
 
-  for (let i = 0; i <= 2; i++) {
-    for (let j = 0; j <= 2; j++) {
-      for (let k = 0; k <= 2; k++) {
+  for (let i = 0; i <= repeat; i++) {
+    for (let j = 0; j <= repeat; j++) {
+      for (let k = 0; k <= repeat; k++) {
         raws.push({
           kind: 'corner',
           fractional: { x: i, y: j, z: k },
@@ -337,9 +343,9 @@ function buildBccAtoms(): Atom[] {
     }
   }
 
-  for (let i = 0; i <= 1; i++) {
-    for (let j = 0; j <= 1; j++) {
-      for (let k = 0; k <= 1; k++) {
+  for (let i = 0; i < repeat; i++) {
+    for (let j = 0; j < repeat; j++) {
+      for (let k = 0; k < repeat; k++) {
         raws.push({
           kind: 'body',
           fractional: { x: i + 0.5, y: j + 0.5, z: k + 0.5 },
@@ -727,12 +733,17 @@ export function buildCrystal(id: StructureId, params: CrystalParams = {}): Cryst
         seed.type === 'O' ? lattice.radiusRatioOctahedral : lattice.radiusRatioTetrahedral,
       ),
     );
-    return finishModel(meta, atoms, sites);
+    return finishModel(meta, atoms, sites, 1);
   }
 
-  const meta = STRUCTURE_META[id];
-  const atoms = id === 'fcc' ? buildFccAtoms() : buildBccAtoms();
-  const seeds = buildCubicSites(id, 2);
+  // HCP always shows one hexagonal prism; the cubic repeat is ignored there.
+  const cellRepeat: CellRepeat = params.cellRepeat === 1 ? 1 : 2;
+  const baseMeta = STRUCTURE_META[id];
+  const atoms = id === 'fcc' ? buildFccAtoms(cellRepeat) : buildBccAtoms(cellRepeat);
+  // The teaching cluster is finite, so its atom count depends on the repeat.
+  // Keep the scientific per-cell numbers while reporting this cluster's count.
+  const meta: StructureMeta = { ...baseMeta, clusterAtomCount: atoms.length };
+  const seeds = buildCubicSites(id, cellRepeat);
   const sites = seeds.map((seed) =>
     analyzeSite(
       seed,
@@ -741,17 +752,19 @@ export function buildCrystal(id: StructureId, params: CrystalParams = {}): Cryst
       seed.type === 'O' ? meta.radiusRatioOctahedral : meta.radiusRatioTetrahedral,
     ),
   );
-  return finishModel(meta, atoms, sites);
+  return finishModel(meta, atoms, sites, cellRepeat);
 }
 
 function finishModel(
   meta: StructureMeta,
   atoms: Atom[],
   sites: InterstitialSite[],
+  cellRepeat: CellRepeat,
 ): CrystalModel {
   const boundingRadius = atoms.reduce((max, atom) => Math.max(max, length(atom.position)), 0);
   return {
     id: meta.id,
+    cellRepeat,
     atoms,
     sites,
     meta,

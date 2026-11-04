@@ -135,6 +135,10 @@ export function renderShell(root: HTMLElement): void {
         </div>
       </div>
 
+      <button class="panel-reopen" id="panel-reopen" type="button" aria-label="展开实验控制台" title="展开实验控制台" aria-expanded="false" aria-controls="panel">
+        ${icon('chevron', 18)}<span>控制台</span>
+      </button>
+
       <div class="quick-dock" id="quick-dock" role="toolbar" aria-label="常驻快捷控制">
         <div class="qd-popover" id="qd-popover" hidden></div>
         <div class="qd-menu">
@@ -147,6 +151,9 @@ export function renderShell(root: HTMLElement): void {
           <button class="qd-btn qd-swatch-btn" id="qd-color" type="button" title="所有小球颜色调整（内外层 / 统一色）" aria-label="所有小球颜色调整" aria-expanded="false" aria-haspopup="true">
             <span class="qd-swatch" id="qd-swatch"></span><span>小球颜色</span>
           </button>
+          <button class="qd-btn qd-restore-color" id="qd-color-restore" type="button" title="把所有单独改过颜色的原子恢复为默认配色" aria-label="恢复默认颜色" hidden>
+            ${icon('restore', 17)}<span>恢复默认色 <em id="qd-color-restore-count">0</em></span>
+          </button>
           <button class="qd-btn" id="qd-xray" type="button" role="switch" aria-checked="false" title="线框透视（晶胞线框穿透球体显示）" aria-label="线框透视">
             ${icon('layers', 17)}<span>线框透视</span>
           </button>
@@ -155,6 +162,18 @@ export function renderShell(root: HTMLElement): void {
           </button>
           <button class="qd-btn" id="qd-atoms" type="button" role="switch" aria-checked="true" title="显示 / 隐藏原子" aria-label="显示原子">
             ${icon('eye', 17)}<span>显示原子</span>
+          </button>
+          <button class="qd-btn" id="qd-cell" type="button" role="switch" aria-checked="true" title="显示 / 隐藏晶胞线框" aria-label="晶胞">
+            ${icon('cube', 17)}<span>晶胞</span>
+          </button>
+          <button class="qd-btn" id="qd-range" type="button" title="显示范围：范围外球体切换为原子透视" aria-label="显示范围" aria-expanded="false" aria-haspopup="true">
+            ${icon('fit', 17)}<span>显示范围</span>
+          </button>
+          <button class="qd-btn" id="qd-bg" type="button" title="背景配色" aria-label="背景" aria-expanded="false" aria-haspopup="true">
+            ${icon('palette', 17)}<span>背景</span>
+          </button>
+          <button class="qd-btn qd-wide" id="qd-export" type="button" title="导出 PNG / WebP / GIF" aria-label="导出">
+            ${icon('download', 17)}<span>导出 / EXPORT</span>
           </button>
         </div>
         <div class="qd-status" id="qd-status">0.50r · 范围 100% · 实心 63 · 透视 0</div>
@@ -221,6 +240,14 @@ export function renderShell(root: HTMLElement): void {
               <div><dt>原子 / 胞</dt><dd id="data-atoms">4</dd></div>
               <div><dt>团簇原子</dt><dd id="data-cluster">63</dd></div>
             </dl>
+            <div class="field cell-repeat-field" id="cell-repeat-field">
+              <div class="field-label"><span>晶胞重复 <em>CELL REPEAT</em></span><em id="cell-repeat-note">2×2×2 超胞</em></div>
+              <div class="segmented compact" role="group" aria-label="晶胞重复数">
+                <button type="button" data-cell-repeat="1" aria-pressed="false" title="1×1×1 常规晶胞：8 角点 + 6 面心，含结构参数与 CN 的完整单胞">1×1×1</button>
+                <button type="button" data-cell-repeat="2" aria-pressed="true" title="2×2×2 超胞外框（默认示意）">2×2×2</button>
+              </div>
+              <p class="micro-note" id="cell-repeat-hint">1×1×1 = 8 角点 + 6 面心（14 球 · 每胞 4 原子 · CN 12）；2×2×2 为超胞示意。HCP 固定 A-B-A 三层，不随此开关变化。</p>
+            </div>
             <div class="cell-diagram-block">
               <div class="cell-diagram-head"><span>晶胞示意</span><em>SCHEMATIC · 等比投影</em></div>
               <div class="cell-diagram" id="cell-diagram"></div>

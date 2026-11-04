@@ -375,6 +375,23 @@ async function main() {
     // Let the action toast expire so the bottom atom is not covered in the artifact.
     await page.waitForTimeout(1900);
     await page.screenshot({ path: path.join(ARTIFACTS, 'display-all-fcc.png') });
+    // Same-button toggle: pressing the active preset again returns to range mode.
+    await page.locator('#display-all-btn').click();
+    await settle(page, 600);
+    const allOff = await page.evaluate(() => ({
+      state: window.__CRYSTAL_DEBUG__.getState(),
+      button: document.querySelector('#display-all-btn')?.textContent ?? '',
+      toast: document.querySelector('#toast-text')?.textContent ?? '',
+    }));
+    record(
+      '“显示全部”同键开关：再次点击回到范围模式',
+      allOff.state.displayMode === 'range' &&
+        allOff.toast.includes('回到范围显示') &&
+        allOff.button.includes('显示全部'),
+      `${allOff.state.displayMode} · ${allOff.toast} · ${allOff.button}`,
+    );
+    await page.locator('#display-all-btn').click();
+    await settle(page, 700);
     await page.locator('#display-reset-btn').click();
     await settle(page, 400);
 
@@ -523,6 +540,21 @@ async function main() {
       JSON.stringify(shellHcp),
     );
     await page.screenshot({ path: path.join(ARTIFACTS, 'display-shell-hcp.png') });
+    // Same-button toggle: pressing the active shell preset closes it.
+    await page.locator('#display-shell-btn').click();
+    await settle(page, 700);
+    const shellOff = await page.evaluate(() => ({
+      state: window.__CRYSTAL_DEBUG__.getState(),
+      button: document.querySelector('#display-shell-btn')?.textContent ?? '',
+      toast: document.querySelector('#toast-text')?.textContent ?? '',
+    }));
+    record(
+      '配位壳同键开关：再次点击关闭并回到范围模式',
+      shellOff.state.displayMode === 'range' &&
+        shellOff.button.includes('配位壳') &&
+        shellOff.button.includes('CN 12'),
+      `${shellOff.state.displayMode} · ${shellOff.button}`,
+    );
 
     await page.evaluate(() => window.__CRYSTAL_DEBUG__.setStructure('fcc'));
     await settle(page, 950);
@@ -711,14 +743,19 @@ async function main() {
         hcpStats.centerDistance < 1e-9,
       JSON.stringify({ layers: hcpStats.layers, centerDistance: hcpStats.centerDistance }),
     );
+    // The prism is built from lattice vectors anchored on the bottom A layer, so
+    // its axis runs through an A atom column (not through the B shell centre).
+    const hcpC = 2 * Math.sqrt(8 / 3);
+    const hcpInPlane = 2 / Math.sqrt(3);
     const hcpAnchor = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getCellAnchorInfo());
     record(
-      'HCP 六方棱柱锚点 = 配位壳中心原子',
-      hcpAnchor.matchesShellCenter === true &&
-        hcpAnchor.centerIndex === hcpStats.centerIndex &&
-        Math.abs(hcpAnchor.anchor[0]) < 1e-9 &&
-        Math.abs(hcpAnchor.anchor[1]) < 1e-9 &&
-        Math.abs(hcpAnchor.anchor[2]) < 1e-9,
+      'HCP 六方棱柱锚点 = 底层 A 原子列（轴过 A 原子，高 c）',
+      hcpAnchor.matchesShellCenter === false &&
+        hcpAnchor.anchorKind === 'A' &&
+        hcpAnchor.anchorLayer === 0 &&
+        hcpAnchor.anchorAtomIndex >= 0 &&
+        Math.abs(hcpAnchor.anchor[2] + hcpC / 2) < 1e-6 &&
+        Math.abs(Math.hypot(hcpAnchor.anchor[0], hcpAnchor.anchor[1]) - hcpInPlane) < 1e-6,
       JSON.stringify(hcpAnchor),
     );
 
@@ -805,8 +842,12 @@ async function main() {
     );
     const hcpCellNote = await page.locator('#data-cellnote').textContent();
     record(
-      'HCP 结构说明标注 3D 平移等价单胞 / 2D 标准 A 角',
-      Boolean(hcpCellNote?.includes('平移') && hcpCellNote?.includes('A 角')),
+      'HCP 结构说明标注 A 层 / B 层六方棱柱',
+      Boolean(
+        hcpCellNote?.includes('A 层') &&
+          hcpCellNote?.includes('B 层') &&
+          hcpCellNote?.includes('棱柱'),
+      ),
       hcpCellNote ?? '',
     );
     await page.evaluate(() => window.__CRYSTAL_DEBUG__.showInterstitials(false));
@@ -1313,7 +1354,32 @@ async function main() {
       JSON.stringify(refollow),
     );
 
-    // --- show all: secondary, loud density toast -------------------
+    // --- show all sites: same-button toggle + loud density toast ----
+    await page.evaluate(() => window.__CRYSTAL_DEBUG__.showInterstitials(true));
+    await settle(page, 700);
+    const sitesBefore = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getCounts());
+    record(
+      '同键开关前提：位点处于已显示状态',
+      sitesBefore.O + sitesBefore.T > 0,
+      `${sitesBefore.O + sitesBefore.T} 个`,
+    );
+    await page.locator('#site-all-btn').click();
+    await settle(page, 600);
+    const sitesOff = await page.evaluate(() => ({
+      counts: window.__CRYSTAL_DEBUG__.getCounts(),
+      state: window.__CRYSTAL_DEBUG__.getState(),
+    }));
+    record(
+      '“显示全部位点”同键开关：再次点击关闭全部位点',
+      sitesOff.counts.O + sitesOff.counts.T === 0 &&
+        sitesOff.state.showO === false &&
+        sitesOff.state.showT === false,
+      JSON.stringify({ O: sitesOff.counts.O, T: sitesOff.counts.T }),
+    );
+    // Turning the last family off auto-collapses the "间隙位" section, which
+    // hides the button; reopen it before toggling all sites back on.
+    await page.locator('.psec[data-section="sites"] .ps-head').click();
+    await settle(page, 350);
     await page.locator('#site-all-btn').click();
     await settle(page, 600);
     const allCounts = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getCounts());
@@ -1426,6 +1492,22 @@ async function main() {
         Math.abs(autoRestored.cell.brightness - 0.85) < 1e-6,
       JSON.stringify(autoRestored),
     );
+    // Same-button toggle: a second click pins the current style and exits auto.
+    await page.locator('#cell-auto-btn').click();
+    await settle(page, 400);
+    const autoOff = await page.evaluate(() => ({
+      state: window.__CRYSTAL_DEBUG__.getState(),
+      cell: window.__CRYSTAL_DEBUG__.getCellInfo(),
+    }));
+    record(
+      '“自动”同键开关：再次点击固定当前样式并退出自动',
+      autoOff.state.cellStyleAuto === false &&
+        Math.abs(autoOff.cell.lineWidth - 2.8) < 1e-6 &&
+        Math.abs(autoOff.cell.brightness - 0.85) < 1e-6,
+      JSON.stringify(autoOff),
+    );
+    await page.locator('#cell-auto-btn').click();
+    await settle(page, 400);
 
     // --- x-ray -----------------------------------------------------
     await page.locator('#toggle-xray').check();
@@ -1442,6 +1524,536 @@ async function main() {
     await page.locator('#toggle-xray').uncheck();
     await settle(page, 300);
 
+    // === round 2: persistent dock / folded panel / cell repeat ======
+    await page.evaluate(() => {
+      const debug = window.__CRYSTAL_DEBUG__;
+      debug.setStructure('fcc');
+      debug.resetDisplay();
+      debug.setEditMode(false);
+      debug.clearSelection();
+      debug.setAutoRotate(false);
+    });
+    await settle(page, 900);
+    await page.evaluate(() => {
+      const button = document.querySelector('#qd-color-restore');
+      if (button && !button.hasAttribute('hidden')) button.click();
+    });
+    await settle(page, 600);
+
+    // Persistent menu sits in the bottom-right of the stage and stays visible.
+    const dockBox = await page.evaluate(() => {
+      const stage = document.querySelector('#stage').getBoundingClientRect();
+      const dock = document.querySelector('#quick-dock').getBoundingClientRect();
+      const buttons = Array.from(document.querySelectorAll('#quick-dock .qd-btn')).map((node) => ({
+        id: node.id,
+        text: (node.textContent || '').replace(/\s+/g, ' ').trim(),
+      }));
+      const status = document.querySelector('#qd-status');
+      return {
+        stage: { right: stage.right, bottom: stage.bottom, width: stage.width, height: stage.height },
+        dock: { right: dock.right, bottom: dock.bottom, width: dock.width, height: dock.height },
+        buttons,
+        status: status ? status.textContent || '' : '',
+      };
+    });
+    const dockIds = dockBox.buttons.map((button) => button.id);
+    const requiredDockIds = ['qd-reset', 'qd-fit', 'qd-color', 'qd-xray', 'qd-ghost', 'qd-atoms', 'qd-cell', 'qd-range', 'qd-bg', 'qd-export'];
+    record(
+      '常驻菜单固定于舞台右下角',
+      dockBox.dock.right > dockBox.stage.right - 60 &&
+        dockBox.dock.bottom > dockBox.stage.bottom - 160 &&
+        dockBox.dock.right <= dockBox.stage.right + 1 &&
+        dockBox.dock.bottom <= dockBox.stage.bottom + 1,
+      JSON.stringify({ stage: dockBox.stage, dock: dockBox.dock }),
+    );
+    record(
+      '常驻菜单包含 10 个常驻按钮',
+      requiredDockIds.every((id) => dockIds.includes(id)),
+      dockBox.buttons.map((button) => button.id + ':' + button.text).join(' | '),
+    );
+    record(
+      '常驻菜单状态栏反映 0.50r / 100% / 实心 63',
+      dockBox.status.includes('0.50r') && dockBox.status.includes('100%') && dockBox.status.includes('63'),
+      dockBox.status,
+    );
+
+    // Dock toggles stay in sync with state and renderer.
+    await page.locator('#qd-ghost').click();
+    await settle(page, 600);
+    const ghostOn = await page.evaluate(() => ({
+      state: window.__CRYSTAL_DEBUG__.getState(),
+      info: window.__CRYSTAL_DEBUG__.getDisplayInfo(),
+    }));
+    record(
+      '常驻菜单“原子透视”开关联动 ghostAtoms 与透视球数',
+      ghostOn.state.ghostAtoms === true && ghostOn.info.xrayAtomIndices.length === 63,
+      JSON.stringify({ xray: ghostOn.info.xrayAtomIndices.length, ghost: ghostOn.state.ghostAtoms }),
+    );
+    await page.locator('#qd-ghost').click();
+    await settle(page, 500);
+
+    await page.locator('#qd-xray').click();
+    await settle(page, 500);
+    const xrayOn = await page.evaluate(() => ({
+      state: window.__CRYSTAL_DEBUG__.getState(),
+      cell: window.__CRYSTAL_DEBUG__.getCellInfo(),
+    }));
+    record(
+      '常驻菜单“线框透视”开关联动 cellXray',
+      xrayOn.state.cellXray === true && xrayOn.cell.xray === true,
+      JSON.stringify(xrayOn),
+    );
+    await page.locator('#qd-xray').click();
+    await settle(page, 400);
+
+    await page.locator('#qd-cell').click();
+    await settle(page, 400);
+    const cellOff = await page.evaluate(() => ({
+      state: window.__CRYSTAL_DEBUG__.getState(),
+      checked: document.querySelector('#qd-cell').getAttribute('aria-checked'),
+    }));
+    record(
+      '常驻菜单“晶胞”同键开关可隐藏/显示',
+      cellOff.state.showCell === false && cellOff.checked === 'false',
+      JSON.stringify(cellOff),
+    );
+    await page.locator('#qd-cell').click();
+    await settle(page, 400);
+
+    await page.locator('#qd-atoms').click();
+    await settle(page, 400);
+    const atomsOff = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getState());
+    record('常驻菜单“显示原子”同键开关可隐藏球体', atomsOff.showAtoms === false, String(atomsOff.showAtoms));
+    await page.locator('#qd-atoms').click();
+    await settle(page, 600);
+
+    // Colour popover: default gold outer / bronze inner, editable.
+    await page.locator('#qd-color').click();
+    await settle(page, 350);
+    const colorPopover = await page.evaluate(() => {
+      const popover = document.querySelector('#qd-popover');
+      return {
+        hidden: popover ? popover.hasAttribute('hidden') : null,
+        expanded: document.querySelector('#qd-color').getAttribute('aria-expanded'),
+        inner: document.querySelector('#qd-color-inner').value,
+        outer: document.querySelector('#qd-color-outer').value,
+        modes: document.querySelectorAll('[data-qd-mode]').length,
+      };
+    });
+    record(
+      '常驻菜单颜色面板显示内外层默认色与三种配色',
+      colorPopover.hidden === false &&
+        colorPopover.expanded === 'true' &&
+        colorPopover.inner.toUpperCase() === '#B87333' &&
+        colorPopover.outer.toUpperCase() === '#F6C453' &&
+        colorPopover.modes === 3,
+      JSON.stringify(colorPopover),
+    );
+    await page.evaluate(() => {
+      const input = document.querySelector('#qd-color-inner');
+      input.value = '#ab5b2a';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await settle(page, 400);
+    const innerColor = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getState());
+    record('常驻菜单颜色面板可改内层颜色', innerColor.colorInner === '#AB5B2A', innerColor.colorInner);
+    await page.evaluate(() => document.querySelector('#qd-pop-close').click());
+    await settle(page, 300);
+
+    // Range popover: out-of-range atoms turn x-ray instead of disappearing.
+    await page.locator('#qd-range').click();
+    await settle(page, 350);
+    const rangeInitial = await page.evaluate(() => ({
+      value: document.querySelector('#qd-range-input').value,
+      out: document.querySelector('#qd-range-out').textContent,
+    }));
+    record(
+      '常驻菜单显示范围面板初始 100%',
+      rangeInitial.value === '100' && rangeInitial.out.trim() === '100%',
+      JSON.stringify(rangeInitial),
+    );
+    await page.evaluate(() => {
+      const input = document.querySelector('#qd-range-input');
+      input.value = '60';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await settle(page, 600);
+    const rangeShrunk = await page.evaluate(() => ({
+      state: window.__CRYSTAL_DEBUG__.getState(),
+      info: window.__CRYSTAL_DEBUG__.getDisplayInfo(),
+    }));
+    record(
+      '缩小显示范围后范围外球体转为原子透视而非消失',
+      Math.abs(rangeShrunk.state.displayRange - 0.6) < 1e-6 &&
+        rangeShrunk.info.hiddenAtomIndices.length === 0 &&
+        rangeShrunk.info.xrayAtomIndices.length > 0,
+      JSON.stringify({
+        range: rangeShrunk.state.displayRange,
+        hidden: rangeShrunk.info.hiddenAtomIndices.length,
+        xray: rangeShrunk.info.xrayAtomIndices.length,
+      }),
+    );
+    await page.evaluate(() => document.querySelector('#qd-range-all').click());
+    await settle(page, 500);
+    const rangeAll = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getState());
+    record('常驻菜单显示范围面板“显示全部”可切换', rangeAll.displayMode === 'all', rangeAll.displayMode);
+    await page.evaluate(() => document.querySelector('#qd-range-all').click());
+    await settle(page, 500);
+    await page.evaluate(() => document.querySelector('#qd-pop-close').click());
+    await settle(page, 300);
+
+    // Background popover
+    await page.locator('#qd-bg').click();
+    await settle(page, 350);
+    const bgCount = await page.evaluate(() => document.querySelectorAll('[data-qd-bg]').length);
+    await page.evaluate(() => document.querySelector('[data-qd-bg="aurora"]').click());
+    await settle(page, 500);
+    const bgState = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getState());
+    record('常驻菜单背景面板切换背景', bgCount === 3 && bgState.background === 'aurora', String(bgState.background));
+    await page.evaluate(() => document.querySelector('[data-qd-bg="deep"]').click());
+    await settle(page, 400);
+    await page.evaluate(() => document.querySelector('#qd-pop-close').click());
+    await settle(page, 300);
+
+    // Quick restore of per-atom colours.
+    await page.evaluate(() => window.__CRYSTAL_DEBUG__.resetDisplay());
+    await settle(page, 500);
+    await page.evaluate(() => {
+      window.__CRYSTAL_DEBUG__.setAtomColor('fcc:corner:0.000000,0.000000,0.000000', '#E06A3A');
+    });
+    await settle(page, 400);
+    const restoreVisible = await page.evaluate(() => {
+      const button = document.querySelector('#qd-color-restore');
+      return {
+        hidden: button.hasAttribute('hidden'),
+        count: document.querySelector('#qd-color-restore-count').textContent,
+        colors: Object.keys(window.__CRYSTAL_DEBUG__.getState().atomColors || {}),
+      };
+    });
+    record(
+      '逐个颜色被修改后常驻菜单出现“恢复默认色”开关',
+      restoreVisible.hidden === false && restoreVisible.colors.length === 1 && restoreVisible.count.trim() === '1',
+      JSON.stringify(restoreVisible),
+    );
+    await page.locator('#qd-color-restore').click();
+    await settle(page, 500);
+    const restoreDone = await page.evaluate(() => ({
+      hidden: document.querySelector('#qd-color-restore').hasAttribute('hidden'),
+      colors: Object.keys(window.__CRYSTAL_DEBUG__.getState().atomColors || {}).length,
+      toast: document.querySelector('#toast-text') ? document.querySelector('#toast-text').textContent : '',
+    }));
+    record(
+      '常驻菜单“恢复默认色”一键清除逐个颜色',
+      restoreDone.hidden === true && restoreDone.colors === 0 && String(restoreDone.toast).includes('默认颜色'),
+      JSON.stringify(restoreDone),
+    );
+
+    // Reset view must also return to the fit-view state.
+    await page.evaluate(() => window.__CRYSTAL_DEBUG__.setDisplay({ range: 0.6 }));
+    await settle(page, 500);
+    await page.locator('#qd-reset').click();
+    await settle(page, 900);
+    const resetInfo = await page.evaluate(() => ({
+      state: window.__CRYSTAL_DEBUG__.getState(),
+      toast: document.querySelector('#toast-text') ? document.querySelector('#toast-text').textContent : '',
+      distance: window.__CRYSTAL_DEBUG__.getCamera().distance,
+    }));
+    await page.evaluate(() => window.__CRYSTAL_DEBUG__.fitView());
+    await settle(page, 650);
+    const fitDistance = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getCamera().distance);
+    record(
+      '重置视角同时回到适应视图',
+      resetInfo.state.focusedSiteId === null &&
+        String(resetInfo.toast).includes('适应视图') &&
+        Math.abs(resetInfo.distance - fitDistance) < 0.05,
+      JSON.stringify({ toast: resetInfo.toast, reset: resetInfo.distance, fit: fitDistance }),
+    );
+    await page.evaluate(() => window.__CRYSTAL_DEBUG__.resetDisplay());
+    await settle(page, 700);
+
+    // Folding the panel keeps the cube in place and leaves a reopen arrow.
+    const beforeFold = await page.evaluate(() => ({
+      camera: window.__CRYSTAL_DEBUG__.getCamera(),
+      width: document.querySelector('#crystal-canvas').getBoundingClientRect().width,
+    }));
+    await page.locator('#panel-toggle').click();
+    await settle(page, 800);
+    const folded = await page.evaluate(() => {
+      const grid = document.querySelector('.app-grid');
+      const reopen = document.querySelector('#panel-reopen');
+      const style = window.getComputedStyle(reopen);
+      const rect = reopen.getBoundingClientRect();
+      return {
+        collapsed: grid ? grid.classList.contains('panel-collapsed') : null,
+        reopenDisplay: style.display,
+        reopenWidth: rect.width,
+        reopenHeight: rect.height,
+        toggleExpanded: document.querySelector('#panel-toggle').getAttribute('aria-expanded'),
+        camera: window.__CRYSTAL_DEBUG__.getCamera(),
+        width: document.querySelector('#crystal-canvas').getBoundingClientRect().width,
+      };
+    });
+    record(
+      '折叠实验控制台后留下展开箭头',
+      folded.collapsed === true &&
+        folded.reopenDisplay !== 'none' &&
+        folded.reopenWidth > 8 &&
+        folded.reopenHeight > 8 &&
+        folded.toggleExpanded === 'false',
+      JSON.stringify({ collapsed: folded.collapsed, display: folded.reopenDisplay, w: folded.reopenWidth, h: folded.reopenHeight }),
+    );
+    record(
+      '折叠实验控制台不引起视角跳动',
+      Math.abs(folded.camera.azimuth - beforeFold.camera.azimuth) < 1e-6 &&
+        Math.abs(folded.camera.polar - beforeFold.camera.polar) < 1e-6 &&
+        folded.width > beforeFold.width + 100,
+      JSON.stringify({ azimuthBefore: beforeFold.camera.azimuth, azimuthAfter: folded.camera.azimuth, widthBefore: beforeFold.width, widthAfter: folded.width }),
+    );
+    await page.locator('#panel-reopen').click();
+    await settle(page, 800);
+    const unfolded = await page.evaluate(() => {
+      const grid = document.querySelector('.app-grid');
+      const reopen = document.querySelector('#panel-reopen');
+      return {
+        collapsed: grid ? grid.classList.contains('panel-collapsed') : null,
+        reopenDisplay: window.getComputedStyle(reopen).display,
+        panelWidth: document.querySelector('#panel').getBoundingClientRect().width,
+      };
+    });
+    record(
+      '展开箭头可恢复实验控制台',
+      unfolded.collapsed === false && unfolded.reopenDisplay === 'none' && unfolded.panelWidth > 200,
+      JSON.stringify(unfolded),
+    );
+
+    // 1x1x1 primitive cell (cubic structures only).
+    await page.evaluate(() => {
+      const debug = window.__CRYSTAL_DEBUG__;
+      debug.setStructure('fcc');
+      debug.resetDisplay();
+      debug.setAutoRotate(false);
+    });
+    await settle(page, 950);
+    await scrollPanelTo(page, '#cell-repeat-field', 8);
+    const repeatField = await page.evaluate(() => {
+      const field = document.querySelector('#cell-repeat-field');
+      return {
+        hidden: field.hasAttribute('hidden'),
+        note: document.querySelector('#cell-repeat-note').textContent,
+        cellRepeat: window.__CRYSTAL_DEBUG__.getState().cellRepeat,
+        total: window.__CRYSTAL_DEBUG__.getDisplayInfo().totalAtomCount,
+      };
+    });
+    record(
+      '立方结构默认 2×2×2 超胞 63 球',
+      repeatField.hidden === false && repeatField.cellRepeat === 2 && repeatField.total === 63 && repeatField.note.includes('超胞'),
+      JSON.stringify(repeatField),
+    );
+    await page.locator('[data-cell-repeat="1"]').click();
+    await settle(page, 900);
+    const oneCell = await page.evaluate(() => ({
+      state: window.__CRYSTAL_DEBUG__.getState(),
+      info: window.__CRYSTAL_DEBUG__.getDisplayInfo(),
+      cell: window.__CRYSTAL_DEBUG__.getCellInfo(),
+      pressed: document.querySelector('[data-cell-repeat="1"]').getAttribute('aria-pressed'),
+      note: document.querySelector('#cell-repeat-note').textContent,
+      toast: document.querySelector('#toast-text') ? document.querySelector('#toast-text').textContent : '',
+    }));
+    record(
+      '晶胞可切换为 1×1×1（FCC 14 球 / 8 角点）',
+      oneCell.state.cellRepeat === 1 &&
+        oneCell.info.totalAtomCount === 14 &&
+        oneCell.cell.cornerMarks === 8 &&
+        oneCell.pressed === 'true' &&
+        oneCell.note.includes('14') &&
+        String(oneCell.toast).includes('1×1×1'),
+      JSON.stringify({ repeat: oneCell.state.cellRepeat, total: oneCell.info.totalAtomCount, corners: oneCell.cell.cornerMarks }),
+    );
+    await page.evaluate(() => window.__CRYSTAL_DEBUG__.setStructure('hcp'));
+    await settle(page, 950);
+    const hcpRepeatField = await page.evaluate(() => {
+      const field = document.querySelector('#cell-repeat-field');
+      return { hidden: field.hasAttribute('hidden'), total: window.__CRYSTAL_DEBUG__.getDisplayInfo().totalAtomCount };
+    });
+    record(
+      'HCP 固定三层，不显示晶胞倍数开关',
+      hcpRepeatField.hidden === true && hcpRepeatField.total === 57,
+      JSON.stringify(hcpRepeatField),
+    );
+    await page.evaluate(() => window.__CRYSTAL_DEBUG__.setStructure('fcc'));
+    await settle(page, 950);
+    await scrollPanelTo(page, '#cell-repeat-field', 8);
+    await page.locator('[data-cell-repeat="2"]').click();
+    await settle(page, 900);
+    const backToSuper = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getDisplayInfo());
+    record('晶胞可切回 2×2×2 超胞', backToSuper.totalAtomCount === 63, String(backToSuper.totalAtomCount));
+
+    // Ctrl-click multi select, then recolour / hide in bulk.
+    await page.evaluate(() => {
+      const debug = window.__CRYSTAL_DEBUG__;
+      debug.setStructure('fcc');
+      debug.resetDisplay();
+      debug.setEditMode(true);
+      debug.clearSelection();
+      debug.setAutoRotate(false);
+    });
+    await settle(page, 800);
+    const twoAtoms = await page.evaluate(() => {
+      const debug = window.__CRYSTAL_DEBUG__;
+      const rect = document.querySelector('#crystal-canvas').getBoundingClientRect();
+      const rail = document.querySelector('.status-rail');
+      const railTop = rail ? rail.getBoundingClientRect().top : rect.bottom;
+      const total = debug.getDisplayInfo().totalAtomCount;
+      const picked = [];
+      for (let index = 0; index < total && picked.length < 2; index++) {
+        if (!debug.isAtomVisible(index)) continue;
+        const point = debug.getAtomScreenPosition(index);
+        if (!point || !point.inView) continue;
+        if (point.x < rect.left + 380 || point.x > rect.right - 80) continue;
+        if (point.y < rect.top + 170 || point.y > railTop - 40) continue;
+        if (picked.some((other) => Math.hypot(other.x - point.x, other.y - point.y) < 90)) continue;
+        picked.push({ index, x: point.x, y: point.y });
+      }
+      return picked;
+    });
+    record('找到两个可多选的投影原子', twoAtoms.length === 2, JSON.stringify(twoAtoms));
+    await page.mouse.click(twoAtoms[0].x, twoAtoms[0].y);
+    await settle(page, 450);
+    await page.keyboard.down('Control');
+    await page.mouse.click(twoAtoms[1].x, twoAtoms[1].y);
+    await page.keyboard.up('Control');
+    await settle(page, 450);
+    const multi = await page.evaluate(() => ({
+      ids: window.__CRYSTAL_DEBUG__.getSelectedAtomIds(),
+      cardHidden: document.querySelector('#atom-card').hasAttribute('hidden'),
+      count: document.querySelector('#atom-card-count').textContent,
+    }));
+    record(
+      'Ctrl + 单击可多选原子',
+      multi.ids.length === 2 && multi.cardHidden === false && multi.count.trim() === '2',
+      JSON.stringify({ ids: multi.ids, count: multi.count }),
+    );
+    await page.evaluate(() => {
+      const input = document.querySelector('#atom-card-color');
+      input.value = '#7ad0ff';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await settle(page, 500);
+    const multiColored = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getState().atomColors);
+    record(
+      '多选后统一改色作用于所有选中原子',
+      multi.ids.every((id) => multiColored[id] === '#7AD0FF'),
+      JSON.stringify(multiColored),
+    );
+    await page.locator('#atom-card-hide').click();
+    await settle(page, 900);
+    const multiHidden = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getAtomRenderInfo());
+    record('多选后可批量隐藏原子', multiHidden.hidden === 2, JSON.stringify(multiHidden));
+    await page.evaluate((ids) => window.__CRYSTAL_DEBUG__.setAtomHidden(ids, false), multi.ids);
+    await settle(page, 900);
+    const multiShown = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getAtomRenderInfo());
+    record('恢复所选可撤销批量隐藏', multiShown.hidden === 0, JSON.stringify(multiShown));
+    // setAtomHidden(..., false) routes through restoreAtomEdits(), which also
+    // drops colour overrides, so repaint before testing the dock colour restore.
+    await page.evaluate(
+      (ids) => ids.forEach((id) => window.__CRYSTAL_DEBUG__.setAtomColor(id, '#7AD0FF')),
+      multi.ids,
+    );
+    await settle(page, 400);
+    await page.locator('#qd-color-restore').click();
+    await settle(page, 500);
+    const multiCleared = await page.evaluate(() => ({
+      colors: Object.keys(window.__CRYSTAL_DEBUG__.getState().atomColors || {}).length,
+      hidden: window.__CRYSTAL_DEBUG__.getAtomRenderInfo().hidden,
+    }));
+    record(
+      '恢复默认色可撤销多选改色',
+      multiCleared.colors === 0 && multiCleared.hidden === 0,
+      JSON.stringify(multiCleared),
+    );
+    await page.mouse.click(twoAtoms[0].x, twoAtoms[0].y);
+    await settle(page, 500);
+    const single = await page.evaluate(() => window.__CRYSTAL_DEBUG__.getSelectedAtomIds());
+    record('普通点击替换当前选择', single.length === 1, JSON.stringify(single));
+    await page.evaluate(() => window.__CRYSTAL_DEBUG__.clearSelection());
+    await settle(page, 300);
+
+    // 2D cell diagrams: no stretched cuboid, HCP primitive cell + prism.
+    const diagrams = {};
+    for (const structure of ['fcc', 'bcc', 'hcp']) {
+      await page.evaluate((id) => window.__CRYSTAL_DEBUG__.setStructure(id), structure);
+      await settle(page, 950);
+      await scrollPanelTo(page, '.cell-diagram-block', 8);
+      diagrams[structure] = await page.evaluate(() => {
+        const svg = document.querySelector('#cell-diagram svg');
+        if (!svg) return null;
+        const circles = Array.from(svg.querySelectorAll('circle')).map((node) => ({
+          cx: Number(node.getAttribute('cx')),
+          cy: Number(node.getAttribute('cy')),
+          r: Number(node.getAttribute('r')),
+        }));
+        const texts = Array.from(svg.querySelectorAll('text')).map((node) => {
+          const box = node.getBBox();
+          return { text: node.textContent, x: box.x, right: box.x + box.width, y: box.y, bottom: box.y + box.height };
+        });
+        return { viewBox: svg.getAttribute('viewBox'), circles, texts };
+      });
+    }
+    const fccDiagram = diagrams.fcc;
+    const hcpDiagram = diagrams.hcp;
+    const textsInside = (diagram) =>
+      diagram.texts.every((box) => box.x >= 0 && box.right <= 268 + 1e-6 && box.y >= 0 && box.bottom <= 176 + 1e-6);
+    const circlesInside = (diagram) =>
+      diagram.circles.every((circle) =>
+        Number.isFinite(circle.cx) &&
+        Number.isFinite(circle.cy) &&
+        circle.r > 0 &&
+        circle.cx - circle.r >= -0.5 &&
+        circle.cx + circle.r <= 268.5 &&
+        circle.cy - circle.r >= -0.5 &&
+        circle.cy + circle.r <= 176.5);
+    record(
+      'FCC 晶胞示意图为等比立方体并含 14 个球',
+      fccDiagram &&
+        fccDiagram.viewBox === '0 0 268 176' &&
+        fccDiagram.circles.length === 14 &&
+        circlesInside(fccDiagram) &&
+        textsInside(fccDiagram) &&
+        (() => {
+          const fronts = fccDiagram.circles.filter((circle) => Math.abs(circle.r - 4.8) < 0.05);
+          if (fronts.length !== 4) return false;
+          const hasSquare = fronts.every((corner) =>
+            fronts.some((other) => Math.abs(other.cy - corner.cy) < 1e-6 && Math.abs(Math.abs(other.cx - corner.cx) - 92) < 1e-6));
+          const hasDepth = fronts.every((corner) =>
+            fccDiagram.circles.some((other) => Math.abs(other.cx - (corner.cx + 30)) < 1e-6 && Math.abs(other.cy - (corner.cy - 22)) < 1e-6));
+          return hasSquare && hasDepth;
+        })(),
+      JSON.stringify({ viewBox: fccDiagram ? fccDiagram.viewBox : null, circles: fccDiagram ? fccDiagram.circles.length : null }),
+    );
+    record(
+      'BCC 晶胞示意图含 9 个球',
+      diagrams.bcc && diagrams.bcc.viewBox === '0 0 268 176' && diagrams.bcc.circles.length === 9 && circlesInside(diagrams.bcc) && textsInside(diagrams.bcc),
+      JSON.stringify({ circles: diagrams.bcc ? diagrams.bcc.circles.length : null }),
+    );
+    const hcpLabels = hcpDiagram ? hcpDiagram.texts.map((box) => box.text) : [];
+    const leftColumn = hcpDiagram ? hcpDiagram.texts.filter((box) => box.right <= 136) : [];
+    const rightColumn = hcpDiagram ? hcpDiagram.texts.filter((box) => box.x >= 136) : [];
+    record(
+      'HCP 晶胞示意图含原胞 + 六方棱柱共 26 个球',
+      hcpDiagram && hcpDiagram.viewBox === '0 0 268 176' && hcpDiagram.circles.length === 26 && circlesInside(hcpDiagram) && textsInside(hcpDiagram),
+      JSON.stringify({ circles: hcpDiagram ? hcpDiagram.circles.length : null, labels: hcpLabels }),
+    );
+    record(
+      'HCP 示意图两列文字不重叠且内容正确',
+      hcpLabels.includes('原胞 2 原子') &&
+        hcpLabels.includes('A + B 基元') &&
+        hcpLabels.includes('六方棱柱 6 原子') &&
+        hcpLabels.some((label) => label.includes('12×1/6')) &&
+        leftColumn.length > 0 &&
+        rightColumn.length > 0 &&
+        Math.max(...leftColumn.map((box) => box.right)) < Math.min(...rightColumn.map((box) => box.x)),
+      JSON.stringify({ left: leftColumn.map((box) => box.text), right: rightColumn.map((box) => box.text) }),
+    );
     // --- mobile ----------------------------------------------------
     await page.evaluate(() => {
       window.__CRYSTAL_DEBUG__.setStructure('fcc');

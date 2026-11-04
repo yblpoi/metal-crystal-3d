@@ -1,4 +1,4 @@
-import type { Atom, StructureId, StructureMeta } from './crystal/types';
+import type { Atom, CellRepeat, StructureId, StructureMeta } from './crystal/types';
 import type { DisplayMode } from './crystal/visibility';
 import { HCP_C_OVER_A, clampHcpCOverA } from './crystal/structures';
 
@@ -8,6 +8,11 @@ import { HCP_C_OVER_A, clampHcpCOverA } from './crystal/structures';
  */
 
 export type ColorMode = 'radial' | 'stacking' | 'gold';
+export type { CellRepeat };
+/** Cubic structures switch between the 1×1×1 cell and the 2×2×2 supercell. */
+export const DEFAULT_CELL_REPEAT: CellRepeat = 2;
+export const MIN_CELL_REPEAT = 1;
+export const MAX_CELL_REPEAT = 2;
 export type SiteFilter = 'all' | 'complete' | 'selected';
 export type BackgroundPreset = 'deep' | 'aurora' | 'gold' | 'custom';
 
@@ -62,6 +67,8 @@ export interface AppState {
   atomSizes: Record<string, number>;
   /** Scientific sandbox: HCP c/a ratio, clamped to the hard-sphere valid interval. */
   hcpCOverA: number;
+  /** Cubic cluster size: one conventional cell (1×1×1) or the 2×2×2 supercell. */
+  cellRepeat: CellRepeat;
 }
 
 const STORAGE_KEY = 'crystal-atlas:atom-colors:v1';
@@ -181,6 +188,7 @@ export function createDefaultState(): AppState {
     atomHidden: loadAtomHidden(),
     atomSizes: loadAtomSizes(),
     hcpCOverA: HCP_C_OVER_A,
+    cellRepeat: DEFAULT_CELL_REPEAT,
   };
 }
 

@@ -25,6 +25,7 @@ import {
   type AppState,
   type AppStore,
   type BackgroundPreset,
+  type CellRepeat,
   type ColorMode,
   type SiteFilter,
 } from '../state';
@@ -54,10 +55,15 @@ export interface PanelActions {
   setDisplayRadius: (radius: number, fit?: boolean) => void;
   setDisplayRange: (range: number) => void;
   setDisplayMode: (mode: DisplayMode, announce?: boolean) => void;
+  /** Single-button toggle: pressing the active mode returns to the range view. */
+  toggleDisplayMode: (mode: DisplayMode) => void;
   setFollowSites: (enabled: boolean) => void;
+  setCellRepeat: (repeat: CellRepeat) => void;
   resetDisplay: () => void;
   setAtomColor: (id: string, hex: string) => void;
   setAtomColors: (ids: string[], hex: string) => void;
+  /** Drop every per-atom colour override in one click (default palette returns). */
+  clearAtomColors: () => void;
   setAtomSizes: (ids: string[], size: number) => void;
   hideAtoms: (ids: string[]) => void;
   showAllHiddenAtoms: () => void;
@@ -176,8 +182,20 @@ export class Panel {
         cellStyleAuto: false,
       });
     });
+    // Same-button toggle: the auto chip is both "on" and "off". Switching it
+    // off pins the currently resolved width/brightness so the frame never jumps.
     byId<HTMLButtonElement>('cell-auto-btn').addEventListener('click', () => {
-      store.set({ cellStyleAuto: true });
+      const state = store.state;
+      if (state.cellStyleAuto) {
+        const style = resolveCellStyle(state);
+        store.set({
+          cellStyleAuto: false,
+          cellLineWidth: style.width,
+          cellLineBrightness: style.brightness,
+        });
+      } else {
+        store.set({ cellStyleAuto: true });
+      }
     });
     byId<HTMLInputElement>('toggle-ghost').addEventListener('change', (event) => {
       store.set({ ghostAtoms: (event.target as HTMLInputElement).checked });
@@ -186,12 +204,25 @@ export class Panel {
       store.set({ showAtoms: (event.target as HTMLInputElement).checked });
     });
 
-    byId<HTMLButtonElement>('site-enter-btn').addEventListener('click', () =>
-      this.actions.enterSiteMode(),
-    );
-    byId<HTMLButtonElement>('site-all-btn').addEventListener('click', () =>
-      this.actions.showAllSites(),
-    );
+    // Same-button toggle: the entry button also closes the curated mode, so the
+    // user never has to find a different control to undo it.
+    byId<HTMLButtonElement>('site-enter-btn').addEventListener('click', () => {
+      const state = this.store.state;
+      if (state.showO || state.showT) {
+        this.actions.setSiteType('O', false);
+        this.actions.setSiteType('T', false);
+        return;
+      }
+      this.actions.enterSiteMode();
+    });
+    byId<HTMLButtonElement>('site-all-btn').addEventListener('click', () => {
+      const state = this.store.state;
+      // Same-button toggle: when any site type is already on, this hides *both*
+      // O and T, so one click always returns to the "no sites" state.
+      if (state.showO) this.actions.setSiteType('O', false);
+      if (state.showT) this.actions.setSiteType('T', false);
+      if (!state.showO && !state.showT) this.actions.showAllSites();
+    });
     byId<HTMLInputElement>('toggle-site-o').addEventListener('change', (event) => {
       this.actions.setSiteType('O', (event.target as HTMLInputElement).checked);
     });
@@ -234,12 +265,22 @@ export class Panel {
     byId<HTMLInputElement>('display-range').addEventListener('input', (event) => {
       this.actions.setDisplayRange(Number((event.target as HTMLInputElement).value) / 100);
     });
+    // An on/off feature must use the same button for both directions: pressing
+    // the active mode again returns to the range view instead of forcing the
+    // user to hunt for 重置显示.
     byId<HTMLButtonElement>('display-all-btn').addEventListener('click', () => {
-      this.actions.setDisplayMode('all', true);
+      this.actions.toggleDisplayMode('all');
     });
     byId<HTMLButtonElement>('display-shell-btn').addEventListener('click', () => {
-      this.actions.setDisplayMode('shell', true);
+      this.actions.toggleDisplayMode('shell');
     });
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cell-repeat]')) {
+      button.addEventListener('click', () => {
+        const repeat: CellRepeat = Number(button.dataset.cellRepeat) === 1 ? 1 : 2;
+        if (repeat === this.store.state.cellRepeat) return;
+        this.actions.setCellRepeat(repeat);
+      });
+    }
     byId<HTMLInputElement>('display-follow-sites').addEventListener('change', (event) => {
       this.actions.setFollowSites((event.target as HTMLInputElement).checked);
     });
@@ -354,6 +395,7 @@ export class Panel {
   private bindSheet(): void {
     this.settingsButton.addEventListener('click', () => this.toggleSheet());
     this.panelToggle.addEventListener('click', () => this.togglePanel());
+    document.getElementById('panel-reopen')?.addEventListener('click', () => this.togglePanel());
     this.backdrop.addEventListener('click', () => this.closeSheet());
     this.media.addEventListener('change', () => {
       if (!this.media.matches) {
@@ -386,7 +428,11 @@ export class Panel {
     this.panelToggle.setAttribute('aria-expanded', String(!collapsed));
     this.panel.setAttribute('aria-hidden', String(collapsed));
     this.panel.inert = collapsed;
-    window.setTimeout(() => window.dispatchEvent(new Event('resize')), 320);
+    document.getElementById('panel-reopen')?.setAttribute('aria-expanded', String(!collapsed));
+    // No synthetic resize burst here: the canvas ResizeObserver already fires
+    // exactly once when the grid column changes, so the rotating cube keeps its
+    // framing and never flashes while the deck slides away.
+    this.grid?.classList.remove('panel-animating');
   }
 
   togglePanel(): void {
@@ -520,7 +566,34 @@ export class Panel {
     setText('data-atoms', String(meta.atomsPerConventionalCell));
     setText('data-cluster', String(meta.clusterAtomCount));
     setText('data-metals', structureExamples(state.structure));
-    setText('data-cellnote', cellNote(state.structure));
+    setText('data-cellnote', cellNote(state.structure, model.cellRepeat));
+
+    // Cubic cluster size: 1x1x1 conventional cell vs 2x2x2 supercell. HCP keeps
+    // its fixed A-B-A three-layer prism, so the switch is hidden there.
+    const repeatField = byId<HTMLElement>('cell-repeat-field');
+    repeatField.hidden = state.structure === 'hcp';
+    if (state.structure !== 'hcp') {
+      for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cell-repeat]')) {
+        button.setAttribute(
+          'aria-pressed',
+          String(Number(button.dataset.cellRepeat) === model.cellRepeat),
+        );
+      }
+      setText(
+        'cell-repeat-note',
+        model.cellRepeat === 1
+          ? '1×1×1 常规晶胞 · ' + meta.clusterAtomCount + ' 球'
+          : '2×2×2 超胞 · ' + meta.clusterAtomCount + ' 球',
+      );
+      setText(
+        'cell-repeat-hint',
+        model.cellRepeat === 1
+          ? '1×1×1 = 8 角点 + 6 面心（14 球）；每胞 ' +
+              (state.structure === 'fcc' ? '4 原子 · CN 12' : '2 原子 · CN 8') +
+              '。晶格常数、键长与 APF 不随重复数改变。'
+          : '2×2×2 超胞外框 + 三个中分面；晶格常数、键长与 APF 与 1×1×1 完全一致，只是视野更大。',
+      );
+    }
 
     const renderState = computeAtomRenderState(
       model.atoms,
@@ -545,15 +618,19 @@ export class Panel {
 
     const shellButton = byId<HTMLButtonElement>('display-shell-btn');
     const shellCn = atomVisibility.shell.coordination;
-    shellButton.textContent =
-      state.displayMode === 'shell'
-        ? `配位壳 · 中心 + ${shellCn} 邻居（CN ${shellCn}）`
-        : `配位壳（第一配位壳）· CN ${shellCn}`;
-    shellButton.setAttribute('aria-pressed', String(state.displayMode === 'shell'));
-    byId<HTMLButtonElement>('display-all-btn').setAttribute(
-      'aria-pressed',
-      String(state.displayMode === 'all'),
-    );
+    const shellOn = state.displayMode === 'shell';
+    shellButton.textContent = shellOn
+      ? `关闭配位壳 · 中心 + ${shellCn} 邻居（CN ${shellCn}）`
+      : `配位壳（第一配位壳）· CN ${shellCn}`;
+    shellButton.setAttribute('aria-pressed', String(shellOn));
+    shellButton.classList.toggle('is-on', shellOn);
+    shellButton.title = shellOn ? '再次点击关闭配位壳，回到按显示范围渲染' : '只保留中心与第一配位壳';
+    const allButton = byId<HTMLButtonElement>('display-all-btn');
+    const allOn = state.displayMode === 'all';
+    allButton.textContent = allOn ? '全部显示中 · 点击关闭' : '显示全部';
+    allButton.setAttribute('aria-pressed', String(allOn));
+    allButton.classList.toggle('is-on', allOn);
+    allButton.title = allOn ? '关闭全部显示，回到按显示范围渲染' : '忽略显示范围，显示全部原子';
     byId<HTMLInputElement>('display-follow-sites').checked = state.followRangeForSites;
     setText(
       'display-cn-note',
@@ -640,6 +717,10 @@ export class Panel {
     const autoButton = byId<HTMLButtonElement>('cell-auto-btn');
     autoButton.setAttribute('aria-pressed', String(state.cellStyleAuto));
     autoButton.classList.toggle('is-on', state.cellStyleAuto);
+    autoButton.textContent = state.cellStyleAuto ? '自动中' : '自动';
+    autoButton.title = state.cellStyleAuto
+      ? '关闭自动线宽/亮度，固定当前值（同一按钮开关）'
+      : '开启自动线宽/亮度：线宽与亮度随缩放连续变化';
     byId<HTMLInputElement>('toggle-ghost').checked = state.ghostAtoms;
     byId<HTMLInputElement>('toggle-atoms').checked = state.showAtoms;
 
@@ -713,7 +794,22 @@ export class Panel {
         : `已关闭跟随：显示全部 ${visibleO} OCT / ${visibleT} TET，配位原子可能在画面外。`,
     );
     byId<HTMLButtonElement>('site-center-btn').hidden = !state.focusedSiteId;
-    byId<HTMLButtonElement>('site-enter-btn').hidden = state.showO || state.showT;
+    const sitesOn = state.showO || state.showT;
+    // Curated entry state = one site family, complete-coordination filter.
+    const curated = sitesOn && state.siteFilter === 'complete' && state.showO !== state.showT;
+    const enterButton = byId<HTMLButtonElement>('site-enter-btn');
+    enterButton.hidden = sitesOn && !curated;
+    enterButton.textContent = curated
+      ? `关闭间隙位 · ${state.showO ? 'OCT' : 'TET'}`
+      : '显示间隙位 · OCT';
+    enterButton.setAttribute('aria-pressed', String(curated));
+    enterButton.title = curated
+      ? '再次点击关闭间隙位（同一按钮开关）'
+      : '打开精选间隙位：中心位点 + 完整配位';
+    const siteAllButton = byId<HTMLButtonElement>('site-all-btn');
+    siteAllButton.textContent = sitesOn ? '隐藏全部位点' : '显示全部位点';
+    siteAllButton.setAttribute('aria-pressed', String(sitesOn));
+    siteAllButton.title = sitesOn ? '再次点击关闭间隙位（同一按钮开关）' : '显示 OCT + TET 全部间隙位';
 
     this.updateBrowser(state);
 

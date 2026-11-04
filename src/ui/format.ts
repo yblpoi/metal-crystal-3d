@@ -1,4 +1,10 @@
-import type { Atom, InterstitialSite, StructureId, StructureMeta } from '../crystal/types';
+import type {
+  Atom,
+  CellRepeat,
+  InterstitialSite,
+  StructureId,
+  StructureMeta,
+} from '../crystal/types';
 
 export function fmt(value: number, digits = 4): string {
   return value.toFixed(digits);
@@ -73,14 +79,20 @@ export function structureExamples(id: StructureId): string {
   }
 }
 
-export function cellDescriptor(id: StructureId): string {
-  return id === 'hcp' ? '六方棱柱 · 3 原胞' : '2×2×2 超胞';
+export function cellDescriptor(id: StructureId, repeat: CellRepeat = 2): string {
+  if (id === 'hcp') return '六方棱柱 · 3 原胞';
+  return repeat === 1 ? '1×1×1 常规晶胞' : '2×2×2 超胞';
 }
 
-export function cellNote(id: StructureId): string {
-  return id === 'hcp'
-    ? '线框：六方棱柱（含 3 个原胞 / 6 原子），底、顶与中层均按 a₁、a₂、c 计算。3D 棱柱为平移后的等价单胞（锚在中心 B 原子）；2D 示意图为标准 A 角取向。球缝中只显示虚线与顶点角标，棱被球体正确遮挡。'
-    : '线框：2×2×2 超胞外框 + 三个中分面（x=1、y=1、z=1），全部由晶格矢量与分数坐标计算。球缝中只显示虚线与顶点角标。';
+export function cellNote(id: StructureId, repeat: CellRepeat = 2): string {
+  if (id === 'hcp') {
+    return '线框：六方棱柱（含 3 个原胞 / 6 原子）。12 个角点与上下底面心都落在 A 层原子列上，棱柱自下层 A 面延伸到上层 A 面、高 c；中层为 B 层，虚线只标中截面（3 个内部 B 原子位于其中）。球缝中棱被球体正确遮挡。';
+  }
+  const frame =
+    repeat === 1
+      ? '1×1×1 常规晶胞外框（8 角点 + 12 条棱，无内部分面）'
+      : '2×2×2 超胞外框 + 三个中分面（x=1、y=1、z=1）';
+  return `线框：${frame}，全部由晶格矢量与分数坐标计算。球缝中只显示虚线与顶点角标。换用 1×1×1 只改变展示范围，晶格常数、键长、配位数与 APF 均不变。`;
 }
 
 export function theorySiteText(meta: StructureMeta): string {

@@ -33,6 +33,7 @@ import {
   resolveCellStyle,
   resolveHcpCOverA,
   type AppState,
+  type CellRepeat,
   type SiteFilter,
 } from './state';
 import { AtomLayer } from './scene/atoms';
@@ -61,6 +62,7 @@ const STRUCTURE_IDS: StructureId[] = ['fcc', 'bcc', 'hcp'];
 
 export interface DebugState {
   structure: StructureId;
+  cellRepeat: CellRepeat;
   colorMode: AppState['colorMode'];
   colorInner: string;
   colorOuter: string;
@@ -116,6 +118,7 @@ export interface DebugApi {
   setAtomSize: (ids: string[], size: number) => void;
   clearSelection: () => void;
   setHcpCOverA: (ratio: number) => boolean;
+  setCellRepeat: (repeat: CellRepeat) => void;
   getAtomRenderInfo: () => { solid: number; xray: number; rendered: number; hidden: number };
   isAtomRendered: (index: number) => boolean;
   getCamera: () => CameraSnapshot;
@@ -138,6 +141,10 @@ export interface DebugApi {
   getCellInfo: () => ReturnType<CellLayer['getInfo']>;
   getCellAnchorInfo: () => {
     anchor: [number, number, number];
+    /** Atom sitting on the cell anchor, -1 when the anchor is not an atom. */
+    anchorAtomIndex: number;
+    anchorKind: string | null;
+    anchorLayer: number | null;
     centerIndex: number;
     centerPosition: [number, number, number] | null;
     matchesShellCenter: boolean;
@@ -243,8 +250,12 @@ export function bootstrap(): void {
 
   const store = new Store();
   const modelCache = new Map<string, CrystalModel>();
-  const modelKey = (id: StructureId): string =>
-    id === 'hcp' ? `hcp@${resolveHcpCOverA(store.state).toFixed(6)}` : id;
+  const modelKey = (id: StructureId): string => {
+    if (id === 'hcp') return `hcp@${resolveHcpCOverA(store.state).toFixed(6)}`;
+    // Cubic clusters are built per repeat count: 1x1x1 (14/9 atoms) and
+    // 2x2x2 (63/35 atoms) must never share a cached model.
+    return `${id}@r${store.state.cellRepeat}`;
+  };
   const modelFor = (id: StructureId): CrystalModel => {
     const key = modelKey(id);
     let model = modelCache.get(key);
@@ -255,7 +266,10 @@ export function bootstrap(): void {
           if (cacheKey.includes('@')) modelCache.delete(cacheKey);
         }
       }
-      model = buildCrystal(id, { hcpCOverA: resolveHcpCOverA(store.state) });
+      model = buildCrystal(id, {
+        hcpCOverA: resolveHcpCOverA(store.state),
+        cellRepeat: store.state.cellRepeat,
+      });
       modelCache.set(key, model);
     }
     return model;
@@ -268,9 +282,14 @@ export function bootstrap(): void {
   // default view is a 19-atom shrunken cluster inside a cell, and the old
   // HCP-radius framing left ~18% of the stage empty. The same radius is used
   // for every structure so the atom scale stays comparable.
-  const defaultFrameRadius = Math.max(
-    ...STRUCTURE_IDS.map((id) => cellWireRadius(buildCrystal(id))),
-  );
+  // The frame radius is shared by the three structures at one cell-repeat
+  // tier, so the atom scale stays comparable across FCC/BCC/HCP; it is
+  // recomputed when the 1x1x1 / 2x2x2 toggle changes the cluster size.
+  const frameRadiusFor = (repeat: CellRepeat): number =>
+    Math.max(
+      ...STRUCTURE_IDS.map((id) => cellWireRadius(buildCrystal(id, { cellRepeat: repeat }))),
+    );
+  const defaultFrameRadius = frameRadiusFor(store.state.cellRepeat);
   let viewer: Viewer;
   try {
     viewer = new Viewer(canvas, {
@@ -545,6 +564,21 @@ export function bootstrap(): void {
     autoFitVisible();
   }
 
+  /**
+   * Same-button toggle for the display-mode presets ("显示全部", "配位壳").
+   * Clicking the preset that is already active returns to the plain range
+   * mode instead of forcing the user to hunt for "重置显示" first.
+   */
+  function toggleDisplayMode(mode: DisplayMode): void {
+    if (store.state.displayMode === mode) {
+      store.set({ displayMode: 'range' });
+      hud.showToast('已关闭 · 回到范围显示');
+      autoFitVisible();
+      return;
+    }
+    setDisplayMode(mode, true);
+  }
+
   function setFollowSites(enabled: boolean): void {
     store.set({ followRangeForSites: enabled });
     hud.showToast(
@@ -719,6 +753,35 @@ export function bootstrap(): void {
     hud.showToast('已重置全部逐球编辑与统一配色');
   }
 
+  /** Drop only the per-atom colour overrides, keeping sizes / hidden flags. */
+  function clearAtomColors(): void {
+    const count = Object.keys(store.state.atomColors).length;
+    if (count === 0) {
+      hud.showToast('没有逐个设置的颜色');
+      return;
+    }
+    store.set({ atomColors: {} });
+    hud.showToast(`已恢复 ${count} 个原子的默认颜色`);
+  }
+
+  /**
+   * 1x1x1 / 2x2x2 conventional-cell toggle. Only the cluster size changes:
+   * a/r (2sqrt2 for FCC, 4/sqrt3 for BCC), CN and APF stay those of one
+   * conventional cell, so the scientific data structure is untouched.
+   */
+  function setCellRepeat(repeat: CellRepeat): void {
+    const next: CellRepeat = repeat === 1 ? 1 : 2;
+    if (next === store.state.cellRepeat) return;
+    // Atom ids change with the cluster, so a stale selection/focus must clear.
+    store.set({
+      cellRepeat: next,
+      selectedAtomIds: [],
+      selectedSiteId: null,
+      focusedSiteId: null,
+    });
+    hud.showToast(next === 1 ? '晶胞 1×1×1 · 常规晶胞' : '晶胞 2×2×2 · 超胞');
+  }
+
   function setHcpCOverA(ratio: number, announce = false): void {
     const next = clampHcpCOverA(ratio);
     if (announce && Number.isFinite(ratio) && Math.abs(next - ratio) > 1e-9) {
@@ -747,16 +810,19 @@ export function bootstrap(): void {
     setDisplayRadius,
     setDisplayRange,
     setDisplayMode,
+    toggleDisplayMode,
     setFollowSites,
     resetDisplay,
     setAtomColor,
     setAtomColors,
+    clearAtomColors,
     setAtomSizes,
     hideAtoms,
     showAllHiddenAtoms,
     restoreAtomEdits,
     resetAllAtomEdits,
     setHcpCOverA,
+    setCellRepeat,
     clearAtomSelection: clearSelection,
   };
   panel = createPanel(store, actions, () => currentModel);
@@ -991,6 +1057,7 @@ export function bootstrap(): void {
 
   function rebuildScene(duration: number, keepOrientation = false): void {
     currentModel = modelFor(store.state.structure);
+    viewer.setFrameRadius(frameRadiusFor(store.state.cellRepeat));
     atomLayer.build(currentModel);
     cellLayer.build(currentModel);
     cellLayer.setResolution(canvas.clientWidth, canvas.clientHeight);
@@ -1033,6 +1100,7 @@ export function bootstrap(): void {
 
   store.subscribe((state, patch) => {
     if (patch.structure) rebuildScene(reducedMotion ? 0 : 450);
+    if (patch.cellRepeat !== undefined) rebuildScene(reducedMotion ? 0 : 350);
     if (patch.hcpCOverA !== undefined && state.structure === 'hcp') {
       // Scientific sandbox: recompute the HCP lattice in place, then keep the
       // orbit direction and re-fit the zoom (never silently reset the camera).
@@ -1040,6 +1108,7 @@ export function bootstrap(): void {
     }
     if (
       patch.structure ||
+      patch.cellRepeat !== undefined ||
       patch.hcpCOverA !== undefined ||
       patch.showO === false ||
       patch.showT === false ||
@@ -1074,11 +1143,18 @@ export function bootstrap(): void {
   });
 
   // persistent corner menu (常驻菜单) + color popover -----------------
-  type DockPopoverKind = 'color' | null;
+  type DockPopoverKind = 'color' | 'range' | 'bg' | null;
   type ColorMode = AppState['colorMode'];
+  type DockPopoverTrigger = Exclude<DockPopoverKind, null>;
   let dockPopover: DockPopoverKind = null;
   const popoverEl = must<HTMLElement>('qd-popover');
   const dockEl = must<HTMLElement>('quick-dock');
+
+  const DOCK_POPOVER_TRIGGERS: Record<DockPopoverTrigger, string> = {
+    color: 'qd-color',
+    range: 'qd-range',
+    bg: 'qd-bg',
+  };
 
   const COLOR_MODE_LABELS: { id: ColorMode; label: string }[] = [
     { id: 'radial', label: '内外层' },
@@ -1092,14 +1168,15 @@ export function bootstrap(): void {
 
   function closeDockPopover(): boolean {
     if (!dockPopover) return false;
+    const trigger = DOCK_POPOVER_TRIGGERS[dockPopover];
     dockPopover = null;
     popoverEl.hidden = true;
     popoverEl.innerHTML = '';
-    byIdOptional('qd-color')?.setAttribute('aria-expanded', 'false');
+    byIdOptional(trigger)?.setAttribute('aria-expanded', 'false');
     return true;
   }
 
-  function dockPopoverMarkup(): string {
+  function colorPopoverMarkup(): string {
     const state = store.state;
     const uniform = state.allAtomColor;
     const dot = (hex: string) => `<i class="qd-dot" style="background:${hex}"></i>`;
@@ -1120,14 +1197,70 @@ export function bootstrap(): void {
       <p class="qd-pop-note">内外层按径向 ${RADIAL_SPLIT.toFixed(2)}R 划分（外层金色 / 内层古铜）；逐球自定义颜色始终优先，统一色会覆盖内外层与堆垛层。</p>`;
   }
 
+  function rangePopoverMarkup(): string {
+    const state = store.state;
+    const percent = Math.round(state.displayRange * 100);
+    const allOn = state.displayMode === 'all';
+    const shellOn = state.displayMode === 'shell';
+    return `
+      <div class="qd-pop-head"><span>显示范围</span><button class="qd-pop-close" type="button" id="qd-pop-close" aria-label="关闭">${icon('close', 14)}</button></div>
+      <div class="range-row">
+        <label for="qd-range-input">显示范围 <output id="qd-range-out">${percent}%</output></label>
+        <input type="range" id="qd-range-input" min="40" max="100" step="1" value="${percent}">
+      </div>
+      <div class="btn-row">
+        <button class="btn-small" id="qd-range-tangent" type="button">相切硬球 100%</button>
+        <button class="btn-small" id="qd-range-shrink" type="button">缩球 0.50r</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn-small${allOn ? ' is-on' : ''}" id="qd-range-all" type="button" aria-pressed="${allOn}">${allOn ? '关闭显示全部' : '显示全部'}</button>
+        <button class="btn-small${shellOn ? ' is-on' : ''}" id="qd-range-shell" type="button" aria-pressed="${shellOn}">${shellOn ? '关闭配位壳' : '配位壳'}</button>
+      </div>
+      <p class="qd-pop-note">范围外的球体不会消失，而是切换为「原子透视」；范围越小，透视层越薄。</p>`;
+  }
+
+  function bgPopoverMarkup(): string {
+    const state = store.state;
+    const presets = [
+      { id: 'deep', label: '深空蓝', hint: 'DEEP' },
+      { id: 'aurora', label: '极光青', hint: 'AURORA' },
+      { id: 'gold', label: '黑金', hint: 'BLACK GOLD' },
+    ];
+    const buttons = presets
+      .map(
+        (preset) =>
+          `<button class="bg-preset${state.background === preset.id ? ' is-active' : ''}" type="button" data-qd-bg="${preset.id}" aria-pressed="${state.background === preset.id}"><span class="bg-swatch ${preset.id}"></span><span>${preset.label}</span><em>${preset.hint}</em></button>`,
+      )
+      .join('');
+    return `
+      <div class="qd-pop-head"><span>背景</span><button class="qd-pop-close" type="button" id="qd-pop-close" aria-label="关闭">${icon('close', 14)}</button></div>
+      <div class="bg-presets qd-pop-bg" role="group" aria-label="背景预设">${buttons}</div>
+      <label class="qd-pop-row" for="qd-bg-custom"><span class="qd-pop-key">自定义底色</span><span class="color-control"><input type="color" id="qd-bg-custom" value="${state.customBg}" aria-label="自定义背景颜色"><em id="qd-bg-hex">${state.customBg}</em></span></label>
+      <p class="qd-pop-note">背景仅作用于页面；导出动画使用透明 alpha 通道，不包含此底色。</p>`;
+  }
+
+  function dockPopoverMarkup(kind: DockPopoverTrigger): string {
+    if (kind === 'range') return rangePopoverMarkup();
+    if (kind === 'bg') return bgPopoverMarkup();
+    return colorPopoverMarkup();
+  }
+
   function refreshDockPopover(): void {
     if (!dockPopover) return;
-    popoverEl.innerHTML = dockPopoverMarkup();
+    popoverEl.innerHTML = dockPopoverMarkup(dockPopover);
     bindDockPopover();
   }
 
   function bindDockPopover(): void {
     byIdOptional('qd-pop-close')?.addEventListener('click', () => closeDockPopover());
+    if (dockPopover === 'range') {
+      bindRangePopover();
+      return;
+    }
+    if (dockPopover === 'bg') {
+      bindBgPopover();
+      return;
+    }
     for (const button of popoverEl.querySelectorAll<HTMLButtonElement>('[data-qd-mode]')) {
       button.addEventListener('click', () => {
         store.set({ colorMode: button.dataset.qdMode as ColorMode, allAtomColor: null });
@@ -1162,17 +1295,61 @@ export function bootstrap(): void {
     });
   }
 
-  function openDockPopover(): void {
-    if (dockPopover) {
+  function bindRangePopover(): void {
+    const input = byIdOptional<HTMLInputElement>('qd-range-input');
+    input?.addEventListener('input', () => {
+      setDisplayRange(Number(input.value) / 100);
+      const out = byIdOptional<HTMLElement>('qd-range-out');
+      if (out) out.textContent = `${input.value}%`;
+    });
+    byIdOptional('qd-range-tangent')?.addEventListener('click', () => {
+      setDisplayRadius(1, true);
+      refreshDockPopover();
+      hud.showToast('相切硬球 · 显示半径 1.00r');
+    });
+    byIdOptional('qd-range-shrink')?.addEventListener('click', () => {
+      setDisplayRadius(0.5);
+      refreshDockPopover();
+    });
+    byIdOptional('qd-range-all')?.addEventListener('click', () => {
+      toggleDisplayMode('all');
+      refreshDockPopover();
+    });
+    byIdOptional('qd-range-shell')?.addEventListener('click', () => {
+      toggleDisplayMode('shell');
+      refreshDockPopover();
+    });
+  }
+
+  function bindBgPopover(): void {
+    for (const button of popoverEl.querySelectorAll<HTMLButtonElement>('[data-qd-bg]')) {
+      button.addEventListener('click', () => {
+        store.set({ background: button.dataset.qdBg as AppState['background'] });
+        refreshDockPopover();
+      });
+    }
+    const custom = byIdOptional<HTMLInputElement>('qd-bg-custom');
+    custom?.addEventListener('input', () => {
+      store.set({ background: 'custom', customBg: custom.value.toUpperCase() });
+    });
+  }
+
+  function openDockPopover(kind: DockPopoverTrigger = 'color'): void {
+    if (dockPopover === kind) {
       closeDockPopover();
       return;
     }
-    dockPopover = 'color';
-    popoverEl.innerHTML = dockPopoverMarkup();
+    if (dockPopover) {
+      byIdOptional(DOCK_POPOVER_TRIGGERS[dockPopover])?.setAttribute('aria-expanded', 'false');
+    }
+    dockPopover = kind;
+    popoverEl.innerHTML = dockPopoverMarkup(kind);
     popoverEl.hidden = false;
     bindDockPopover();
-    byIdOptional('qd-color')?.setAttribute('aria-expanded', 'true');
-    popoverEl.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true });
+    byIdOptional(DOCK_POPOVER_TRIGGERS[kind])?.setAttribute('aria-expanded', 'true');
+    if (kind === 'color') {
+      popoverEl.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true });
+    }
   }
 
   function updateDock(state: Readonly<AppState>, render: AtomRenderState): void {
@@ -1184,6 +1361,16 @@ export function bootstrap(): void {
     setToggle('qd-xray', state.cellXray);
     setToggle('qd-ghost', state.ghostAtoms);
     setToggle('qd-atoms', state.showAtoms);
+    setToggle('qd-cell', state.showCell);
+    // Quick "restore default colour" switch: it only appears while per-atom
+    // colour overrides exist, so it never takes dock space needlessly.
+    const restoreColor = byIdOptional<HTMLButtonElement>('qd-color-restore');
+    if (restoreColor) {
+      const edited = Object.keys(state.atomColors).length;
+      restoreColor.hidden = edited === 0;
+      const restoreCount = byIdOptional<HTMLElement>('qd-color-restore-count');
+      if (restoreCount) restoreCount.textContent = String(edited);
+    }
     const swatch = byIdOptional('qd-swatch');
     if (swatch) {
       swatch.style.background = state.allAtomColor
@@ -1196,8 +1383,40 @@ export function bootstrap(): void {
         state.displayRange * 100,
       )}% · 实心 ${render.solidCount} · 透视 ${render.xrayCount}`;
     }
-    // Keep an open popover in sync without re-rendering it: replacing the DOM
-    // mid-drag would kill the active color picker.
+    // Open popovers are patched in place, never re-rendered while dragging:
+    // re-rendering would drop the active slider / colour picker.
+    if (dockPopover === 'range') {
+      const percent = Math.round(state.displayRange * 100);
+      const rangeInput = byIdOptional<HTMLInputElement>('qd-range-input');
+      if (rangeInput && document.activeElement !== rangeInput) rangeInput.value = String(percent);
+      const rangeOut = byIdOptional<HTMLElement>('qd-range-out');
+      if (rangeOut) rangeOut.textContent = `${percent}%`;
+      const allOn = state.displayMode === 'all';
+      const allBtn = byIdOptional<HTMLButtonElement>('qd-range-all');
+      if (allBtn) {
+        allBtn.textContent = allOn ? '关闭显示全部' : '显示全部';
+        allBtn.setAttribute('aria-pressed', String(allOn));
+        allBtn.classList.toggle('is-on', allOn);
+      }
+      const shellOn = state.displayMode === 'shell';
+      const shellBtn = byIdOptional<HTMLButtonElement>('qd-range-shell');
+      if (shellBtn) {
+        shellBtn.textContent = shellOn ? '关闭配位壳' : '配位壳';
+        shellBtn.setAttribute('aria-pressed', String(shellOn));
+        shellBtn.classList.toggle('is-on', shellOn);
+      }
+    }
+    if (dockPopover === 'bg') {
+      for (const button of popoverEl.querySelectorAll<HTMLButtonElement>('[data-qd-bg]')) {
+        const active = button.dataset.qdBg === state.background;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', String(active));
+      }
+      const bgCustom = byIdOptional<HTMLInputElement>('qd-bg-custom');
+      if (bgCustom && document.activeElement !== bgCustom) bgCustom.value = state.customBg;
+      const bgHex = byIdOptional<HTMLElement>('qd-bg-hex');
+      if (bgHex) bgHex.textContent = state.customBg;
+    }
     if (dockPopover === 'color') {
       const syncColor = (id: string, value: string) => {
         const input = byIdOptional<HTMLInputElement>(id);
@@ -1251,7 +1470,18 @@ export function bootstrap(): void {
   // persistent corner menu wiring ------------------------------------
   byIdOptional('qd-reset')?.addEventListener('click', resetView);
   byIdOptional('qd-fit')?.addEventListener('click', fitView);
-  byIdOptional('qd-color')?.addEventListener('click', () => openDockPopover());
+  byIdOptional('qd-color')?.addEventListener('click', () => openDockPopover('color'));
+  byIdOptional('qd-range')?.addEventListener('click', () => openDockPopover('range'));
+  byIdOptional('qd-bg')?.addEventListener('click', () => openDockPopover('bg'));
+  byIdOptional('qd-cell')?.addEventListener('click', () => {
+    store.set({ showCell: !store.state.showCell });
+  });
+  byIdOptional('qd-export')?.addEventListener('click', () => {
+    byIdOptional<HTMLButtonElement>('export-btn')?.click();
+  });
+  byIdOptional('qd-color-restore')?.addEventListener('click', () => {
+    clearAtomColors();
+  });
   byIdOptional('qd-xray')?.addEventListener('click', () => {
     store.set({ cellXray: !store.state.cellXray });
   });
@@ -1528,6 +1758,7 @@ export function bootstrap(): void {
       const state = store.state;
       return {
         structure: state.structure,
+        cellRepeat: state.cellRepeat,
         colorMode: state.colorMode,
         colorInner: state.colorInner,
         colorOuter: state.colorOuter,
@@ -1587,6 +1818,7 @@ export function bootstrap(): void {
       setHcpCOverA(ratio);
       return true;
     },
+    setCellRepeat: (repeat) => setCellRepeat(repeat),
     getAtomRenderInfo: () => {
       const state = store.state;
       const render = computeAtomRenderState(
@@ -1656,9 +1888,18 @@ export function bootstrap(): void {
         store.state.displayRange,
       );
       const anchor = cellLayer.getAnchorPosition();
+      const anchorAtom = currentModel.atoms.find(
+        (atom) =>
+          Math.abs(atom.position.x - anchor[0]) < 1e-6 &&
+          Math.abs(atom.position.y - anchor[1]) < 1e-6 &&
+          Math.abs(atom.position.z - anchor[2]) < 1e-6,
+      );
       const center = visibility.shell.centerAtom?.position ?? null;
       return {
         anchor,
+        anchorAtomIndex: anchorAtom ? anchorAtom.index : -1,
+        anchorKind: anchorAtom ? anchorAtom.kind : null,
+        anchorLayer: anchorAtom ? anchorAtom.layer : null,
         centerIndex: visibility.shell.centerIndex,
         centerPosition: center ? [center.x, center.y, center.z] : null,
         matchesShellCenter: center

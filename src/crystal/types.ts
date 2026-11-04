@@ -6,6 +6,9 @@
 
 export type StructureId = 'fcc' | 'bcc' | 'hcp';
 
+/** Cubic cluster size: 1×1×1 conventional cell or 2×2×2 supercell. */
+export type CellRepeat = 1 | 2;
+
 /** Interstitial site type: octahedral or tetrahedral. */
 export type SiteType = 'O' | 'T';
 
@@ -107,6 +110,8 @@ export interface StructureMeta {
 
 export interface CrystalModel {
   id: StructureId;
+  /** Number of conventional cells per axis in the cubic cluster (HCP is 1). */
+  cellRepeat: CellRepeat;
   atoms: Atom[];
   sites: InterstitialSite[];
   meta: StructureMeta;

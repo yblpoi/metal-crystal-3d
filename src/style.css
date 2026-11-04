@@ -4489,6 +4489,73 @@ input[type="range"]:disabled {
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
 }
 
+/* extra always-available dock actions (cell / range / background / export) */
+.qd-btn.qd-wide {
+  grid-column: 1 / -1;
+  justify-content: center;
+}
+
+.qd-btn.qd-restore-color {
+  border-color: rgba(246, 196, 83, 0.34);
+}
+
+.qd-btn.qd-restore-color .icon {
+  color: var(--gold);
+}
+
+.qd-restore-color em {
+  margin-left: 2px;
+}
+
+/* "reopen the control deck" tab: only visible while the deck is collapsed */
+.panel-reopen {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  z-index: 16;
+  display: none;
+  align-items: center;
+  gap: 5px;
+  padding: 12px 10px;
+  border: 1px solid rgba(92, 225, 255, 0.26);
+  border-right: 0;
+  border-radius: 9px 0 0 9px;
+  background: rgba(3, 13, 25, 0.9);
+  backdrop-filter: blur(14px);
+  color: var(--ink-soft);
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.panel-reopen .icon {
+  transform: rotate(90deg);
+  color: var(--cyan-soft);
+}
+
+.panel-reopen:hover {
+  border-color: var(--line-strong);
+  background: rgba(92, 225, 255, 0.1);
+  color: #eafaff;
+}
+
+.app-grid.panel-collapsed .panel-reopen {
+  display: inline-flex;
+  animation: fade-up 0.22s ease both;
+}
+
+/* 1x1x1 / 2x2x2 conventional-cell switch in the STRUCTURE section */
+.cell-repeat-field {
+  margin-top: 10px;
+}
+
+.cell-repeat-field .segmented {
+  margin-top: 4px;
+}
+
 /* --- quick dock popovers ------------------------------------------- */
 .qd-popover {
   position: absolute;
@@ -4746,10 +4813,10 @@ input[type="range"]:disabled {
 
 /* --- collapsible control deck (desktop only) ----------------------- */
 @media (min-width: 861px) {
-  .app-grid {
-    transition: grid-template-columns 0.32s cubic-bezier(0.22, 0.8, 0.24, 1);
-  }
-
+  /* Deliberately no grid-template-columns transition here: animating the grid
+     column would resize the canvas every frame (the ResizeObserver fires per
+     step), which made the rotating cube snap/flash when the deck was toggled.
+     The deck itself still slides out via its own transform transition. */
   .panel {
     transition:
       transform 0.32s cubic-bezier(0.22, 0.8, 0.24, 1),
@@ -4943,8 +5010,9 @@ input[type="range"]:disabled {
     right: 8px;
   }
 
+  /* three columns so the eleven corner actions stay one thumb-screen tall */
   .qd-menu {
-    grid-template-columns: repeat(2, minmax(72px, 1fr));
+    grid-template-columns: repeat(3, minmax(64px, 1fr));
     gap: 4px;
     padding: 5px;
   }

@@ -2,8 +2,7 @@ import { Group, NormalBlending, Vector3 } from 'three';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
-import type { CrystalModel, Vec3 } from '../crystal/types';
-import { firstCoordinationShell } from '../crystal/visibility';
+import type { Atom, CrystalModel, Vec3 } from '../crystal/types';
 
 /**
  * Two-stroke cell frame:
@@ -72,11 +71,18 @@ function close(a: number, b: number): boolean {
 /** Atom that defines the cell origin in cluster coordinates. */
 function cellAnchorAtom(model: CrystalModel) {
   if (model.id === 'hcp') {
-    // HCP's bbox centre is not an atom. Anchor the prism on the same CN-12
-    // atom the range filter and coordination shell use, so the cell, the
-    // centre ring and the visible cluster share one reference point.
-    const shell = firstCoordinationShell(model.atoms);
-    if (shell.centerAtom) return shell.centerAtom;
+    // The hexagonal prism cell is bounded by A layers: its 12 corners and both
+    // face centres are A atoms, and its axis runs through an A column. The
+    // cluster origin is the central B atom, so the nearest A columns are
+    // a/sqrt(3) away. Pick the bottom-layer column closest to the origin
+    // (ties broken by y then x) so the frame is deterministic.
+    const bottomZ = Math.min(...model.atoms.map((atom) => atom.position.z));
+    const bottom = model.atoms.filter((atom) => close(atom.position.z, bottomZ));
+    const inPlane = (atom: Atom) => Math.hypot(atom.position.x, atom.position.y);
+    bottom.sort(
+      (a, b) => inPlane(a) - inPlane(b) || a.position.y - b.position.y || a.position.x - b.position.x,
+    );
+    if (bottom.length > 0) return bottom[0];
   }
   return (
     model.atoms.find(
@@ -96,13 +102,20 @@ function toWorld(anchor: Vector3, vectors: [Vec3, Vec3, Vec3], f: Vec3): Vector3
   );
 }
 
-function cubicEdges(): Edge[] {
+/**
+ * Cube frame covering repeat x repeat x repeat conventional cells.
+ * repeat = 1 is one unit cell (12 edges, no interior planes); repeat = 2 is
+ * the 2x2x2 supercell (12 outer edges + one mid-plane per axis). Coordinates
+ * are lattice units, so every edge keeps the same length and every corner
+ * stays 90 degrees: the frame can never be squashed into a box.
+ */
+function cubicEdges(repeat: number): Edge[] {
   const outer: Edge[] = [];
   const inner: Edge[] = [];
   const corners: Vec3[] = [];
-  for (const x of [0, 2]) {
-    for (const y of [0, 2]) {
-      for (const z of [0, 2]) corners.push({ x, y, z });
+  for (const x of [0, repeat]) {
+    for (const y of [0, repeat]) {
+      for (const z of [0, repeat]) corners.push({ x, y, z });
     }
   }
   for (let i = 0; i < corners.length; i++) {
@@ -110,35 +123,37 @@ function cubicEdges(): Edge[] {
       const a = corners[i];
       const b = corners[j];
       const diff = Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + Math.abs(a.z - b.z);
-      if (diff === 2) outer.push({ a, b, inner: false });
+      if (diff === repeat) outer.push({ a, b, inner: false });
     }
   }
 
-  // Three mid-planes (x=1, y=1, z=1) outline the division between the eight
-  // conventional cells inside the 2x2x2 supercell.
-  for (const axis of ['x', 'y', 'z'] as const) {
-    const plane: Vec3[] = [];
-    for (const u of [0, 2]) {
-      for (const v of [0, 2]) {
-        const point: Vec3 = { x: 1, y: 1, z: 1 };
-        if (axis === 'x') {
-          point.y = u;
-          point.z = v;
-        } else if (axis === 'y') {
-          point.x = u;
-          point.z = v;
-        } else {
-          point.x = u;
-          point.y = v;
+  // Interior lattice planes outline the division between the conventional
+  // cells: none for a single cell, repeat - 1 per axis for the supercell.
+  for (let t = 1; t < repeat; t++) {
+    for (const axis of ['x', 'y', 'z'] as const) {
+      const plane: Vec3[] = [];
+      for (const u of [0, repeat]) {
+        for (const v of [0, repeat]) {
+          const point: Vec3 = { x: t, y: t, z: t };
+          if (axis === 'x') {
+            point.y = u;
+            point.z = v;
+          } else if (axis === 'y') {
+            point.x = u;
+            point.z = v;
+          } else {
+            point.x = u;
+            point.y = v;
+          }
+          plane.push(point);
         }
-        plane.push(point);
       }
+      plane.sort((p, q) => p.x + p.y + p.z - (q.x + q.y + q.z));
+      inner.push({ a: plane[0], b: plane[1], inner: true });
+      inner.push({ a: plane[1], b: plane[3], inner: true });
+      inner.push({ a: plane[3], b: plane[2], inner: true });
+      inner.push({ a: plane[2], b: plane[0], inner: true });
     }
-    plane.sort((p, q) => p.x + p.y + p.z - (q.x + q.y + q.z));
-    inner.push({ a: plane[0], b: plane[1], inner: true });
-    inner.push({ a: plane[1], b: plane[3], inner: true });
-    inner.push({ a: plane[3], b: plane[2], inner: true });
-    inner.push({ a: plane[2], b: plane[0], inner: true });
   }
 
   return [...outer, ...inner];
@@ -159,16 +174,16 @@ export const HCP_PRISM_HEX: Vec3[] = [
 ];
 
 /**
- * Hexagonal prism centred on the cell anchor. The anchor is the CN-12 B atom,
- * so the prism's six vertical edges pass through the six in-plane B atoms at
- * mid-height (z offset 0); the top/bottom rings sit at +-c/2. The previous
- * version anchored the prism on an A column, which put the whole frame
- * 0.577a to one side of the atom cluster.
+ * Hexagonal prism cell on the A sublattice: the bottom ring is the A layer at
+ * the anchor, the top ring is the next A layer one c above, and the six
+ * vertical edges are A atomic columns. Corners and the two face centres are A
+ * atoms; the three interior B atoms sit at mid-height (z offset 1/2), where the
+ * dashed inner ring marks the B layer plane.
  */
 function hcpEdges(): Edge[] {
   const hex = HCP_PRISM_HEX;
   const edges: Edge[] = [];
-  for (const z of [-0.5, 0.5]) {
+  for (const z of [0, 1]) {
     for (let i = 0; i < hex.length; i++) {
       const a = hex[i];
       const b = hex[(i + 1) % hex.length];
@@ -177,15 +192,17 @@ function hcpEdges(): Edge[] {
   }
   for (const vertex of hex) {
     edges.push({
-      a: { ...vertex, z: -0.5 },
-      b: { ...vertex, z: 0.5 },
+      a: { ...vertex, z: 0 },
+      b: { ...vertex, z: 1 },
       inner: false,
     });
   }
+  // Decorative mid-plane at the B layer (z = 1/2): it is not an atom plane,
+  // it only shows where the three interior B atoms sit inside the prism.
   for (let i = 0; i < hex.length; i++) {
     const a = hex[i];
     const b = hex[(i + 1) % hex.length];
-    edges.push({ a: { ...a, z: 0 }, b: { ...b, z: 0 }, inner: true });
+    edges.push({ a: { ...a, z: 0.5 }, b: { ...b, z: 0.5 }, inner: true });
   }
   return edges;
 }
@@ -209,7 +226,9 @@ function buildCellGeometry(model: CrystalModel): CellGeometry {
   const axes = vectors.map((vector) =>
     new Vector3(vector.x, vector.y, vector.z).normalize(),
   );
-  const edges = model.meta.lattice.kind === 'cubic' ? cubicEdges() : hcpEdges();
+  const cubic = model.meta.lattice.kind === 'cubic';
+  const repeat = cubic ? (model.cellRepeat === 1 ? 1 : 2) : 1;
+  const edges = cubic ? cubicEdges(repeat) : hcpEdges();
   const outer: number[] = [];
   const inner: number[] = [];
 
@@ -221,11 +240,12 @@ function buildCellGeometry(model: CrystalModel): CellGeometry {
   }
 
   const corners: CornerAnchor[] = [];
-  if (model.meta.lattice.kind === 'cubic') {
-    const centre = toWorld(anchor, vectors, { x: 1, y: 1, z: 1 });
-    for (const x of [0, 2]) {
-      for (const y of [0, 2]) {
-        for (const z of [0, 2]) {
+  if (cubic) {
+    const half = repeat / 2;
+    const centre = toWorld(anchor, vectors, { x: half, y: half, z: half });
+    for (const x of [0, repeat]) {
+      for (const y of [0, repeat]) {
+        for (const z of [0, repeat]) {
           const corner = toWorld(anchor, vectors, { x, y, z });
           const atomIndex = model.atoms.findIndex(
             (atom) =>
@@ -242,8 +262,8 @@ function buildCellGeometry(model: CrystalModel): CellGeometry {
       }
     }
   }
-  // HCP: the prism corners are empty B columns at z = +-c/2. Ticks there would
-  // be pure floating fragments, so the HCP frame intentionally has none.
+  // HCP: all twelve prism corners and both face centres already coincide with
+  // A atoms, so the frame needs no floating corner ticks.
 
   return { anchor, outer, inner, corners, axes };
 }
@@ -274,8 +294,9 @@ function lineMaterial(
 
 /**
  * Cell wireframe computed from lattice vectors and fractional coordinates.
- * Cubic: 2x2x2 supercell + three mid-planes. HCP: one hexagonal prism (three
- * primitive cells) centred on the CN-12 atom.
+ * Cubic: repeat^3 conventional cells (1x1x1 or 2x2x2) plus interior planes.
+ * HCP: one hexagonal prism (three primitive cells) whose axis runs through a
+ * bottom A-layer column, so every corner and face centre is an A atom.
  *
  * Each stroke is a LineSegments2 ribbon (real pixel widths) with depth testing
  * on by default: lines hide behind atoms and stay visible in the gaps. The
@@ -569,7 +590,7 @@ export class CellLayer {
     return this.cornerBoundsRadius;
   }
 
-  /** World position of the cell anchor (the central atom for HCP). */
+  /** World position of the cell anchor (the bottom A-layer atom for HCP). */
   getAnchorPosition(): [number, number, number] {
     return [this.anchor.x, this.anchor.y, this.anchor.z];
   }

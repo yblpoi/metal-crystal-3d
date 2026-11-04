@@ -56,7 +56,8 @@ export class Hud {
       `<span class="chip"><i>a/r</i><b>${fmt(meta.lattice.a, 4)}</b></span>`,
     ].join('');
 
-    const cellText = meta.id === 'hcp' ? 'A-B-A · 3 层' : cellDescriptor(meta.id);
+    const cellText =
+      meta.id === 'hcp' ? 'A-B-A · 3 层' : cellDescriptor(meta.id, model.cellRepeat);
     const render = computeAtomRenderState(
       model.atoms,
       state.displayMode,
