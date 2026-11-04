@@ -1,0 +1,16 @@
+node_modules
+dist
+.DS_Store
+artifacts
+coverage
+*.log
+
+# Local environment and tooling files
+.env
+.env.*
+PLAN.md
+AGENTS.md
+CLAUDE.md
+CODEBUDDY.md
+.codebuddy/
+.codegraph/
