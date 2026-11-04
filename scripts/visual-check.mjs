@@ -2067,6 +2067,44 @@ async function main() {
       JSON.stringify(scaleReset),
     );
 
+    // Secondary popovers must stay inside the stage at large UI scales.
+    await page.click('[data-ui-scale="1.3"]');
+    await settle(page, 700);
+    const popoverFit = [];
+    for (const id of ['qd-range', 'qd-bg', 'qd-color']) {
+      await page.evaluate((triggerId) => document.getElementById(triggerId).click(), id);
+      await settle(page, 340);
+      popoverFit.push(
+        await page.evaluate((triggerId) => {
+          const pop = document.querySelector('#qd-popover');
+          const rect = pop.getBoundingClientRect();
+          const stageRect = document.querySelector('#stage').getBoundingClientRect();
+          return {
+            id: triggerId,
+            top: Math.round(rect.top),
+            bottom: Math.round(rect.bottom),
+            stageTop: Math.round(stageRect.top),
+            stageBottom: Math.round(stageRect.bottom),
+            inside:
+              pop.hidden === false &&
+              rect.top >= stageRect.top - 1 &&
+              rect.bottom <= stageRect.bottom + 1 &&
+              rect.left >= stageRect.left - 1 &&
+              rect.right <= stageRect.right + 1,
+          };
+        }, id),
+      );
+      await page.evaluate((triggerId) => document.getElementById(triggerId).click(), id);
+      await settle(page, 260);
+    }
+    record(
+      '130% 缩放下常驻菜单二级浮层完整落在舞台内',
+      popoverFit.every((item) => item.inside),
+      JSON.stringify(popoverFit),
+    );
+    await page.click('[data-ui-scale="1"]');
+    await settle(page, 700);
+
     // 1x1x1 primitive cell (cubic structures only).
     await page.evaluate(() => {
       const debug = window.__CRYSTAL_DEBUG__;

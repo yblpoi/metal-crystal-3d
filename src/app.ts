@@ -1200,10 +1200,57 @@ export function bootstrap(): void {
     if (!dockPopover) return false;
     const trigger = DOCK_POPOVER_TRIGGERS[dockPopover];
     dockPopover = null;
+    dockEl.classList.remove('has-popover');
     popoverEl.hidden = true;
     popoverEl.innerHTML = '';
+    popoverEl.classList.remove('is-flanking');
+    popoverEl.style.removeProperty('max-height');
+    popoverEl.style.removeProperty('max-width');
     byIdOptional(trigger)?.setAttribute('aria-expanded', 'false');
     return true;
+  }
+
+  // A popover opening above the dock runs out of room as soon as the dock grows
+  // (large UI scale, wide status rail). Keep it inside the stage: put it beside
+  // the menu when the stage allows it, otherwise overlay the dock, and always
+  // cap its height so the content scrolls instead of being clipped.
+  function positionDockPopover(): void {
+    if (!dockPopover || popoverEl.hidden) return;
+    if (window.matchMedia('(max-width: 860px)').matches) {
+      popoverEl.classList.remove('is-flanking');
+      popoverEl.style.removeProperty('max-height');
+      popoverEl.style.removeProperty('max-width');
+      return;
+    }
+    const stageEl = byIdOptional<HTMLElement>('stage');
+    if (!stageEl) return;
+    const dockRect = dockEl.getBoundingClientRect();
+    const stageRect = stageEl.getBoundingClientRect();
+    const leftSpace = dockRect.left - stageRect.left - 12;
+    const flank = leftSpace >= 284;
+    popoverEl.classList.toggle('is-flanking', flank);
+    // The shell is zoomed by --ui-scale, so layout pixels (offset*/style.top)
+    // and visual pixels (getBoundingClientRect) differ by that factor. Measure
+    // the scale from the dock itself and convert at the boundary.
+    const scale = dockEl.offsetWidth > 0 ? dockRect.width / dockEl.offsetWidth : 1;
+    popoverEl.style.maxHeight = `${Math.max(200, (stageRect.height - 24) / scale)}px`;
+    popoverEl.style.maxWidth = `${Math.max(200, flank ? Math.min(272, leftSpace) : Math.min(272, dockRect.width))}px`;
+    const trigger = byIdOptional<HTMLElement>(DOCK_POPOVER_TRIGGERS[dockPopover]);
+    if (!flank || !trigger) {
+      popoverEl.style.removeProperty('top');
+      popoverEl.style.removeProperty('bottom');
+      return;
+    }
+    // Align the card with the control that opened it, then keep it inside the
+    // stage: shift vertically while the menu is scrolled or the screen is
+    // short, so the card always reads as that button's submenu.
+    const triggerRect = trigger.getBoundingClientRect();
+    const height = popoverEl.getBoundingClientRect().height;
+    const minTop = stageRect.top + 12;
+    const maxTop = Math.max(minTop, stageRect.bottom - 12 - height);
+    const top = Math.min(Math.max(triggerRect.top, minTop), maxTop);
+    popoverEl.style.bottom = 'auto';
+    popoverEl.style.top = `${Math.round((top - dockRect.top) / scale)}px`;
   }
 
   function colorPopoverMarkup(): string {
@@ -1373,10 +1420,12 @@ export function bootstrap(): void {
       byIdOptional(DOCK_POPOVER_TRIGGERS[dockPopover])?.setAttribute('aria-expanded', 'false');
     }
     dockPopover = kind;
+    dockEl.classList.add('has-popover');
     popoverEl.innerHTML = dockPopoverMarkup(kind);
     popoverEl.hidden = false;
     bindDockPopover();
     byIdOptional(DOCK_POPOVER_TRIGGERS[kind])?.setAttribute('aria-expanded', 'true');
+    positionDockPopover();
     if (kind === 'color') {
       popoverEl.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true });
     }
@@ -1844,6 +1893,7 @@ export function bootstrap(): void {
   });
   window.addEventListener('resize', () => {
     syncDockDensity();
+    positionDockPopover();
     cellLayer.setResolution(canvas.clientWidth, canvas.clientHeight);
     shellLayer.setResolution(canvas.clientWidth, canvas.clientHeight);
     hud.update(store.state, currentModel);

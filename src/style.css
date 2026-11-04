@@ -4944,17 +4944,40 @@ input[type="range"]:disabled {
 /* --- quick dock popovers ------------------------------------------- */
 .qd-popover {
   position: absolute;
+  /* Anchored to the dock's bottom-right corner by default; JS adds
+     .is-flanking to move it beside the menu when the stage is wide enough.
+     The height is clamped to the free stage area so a large UI scale can never
+     push the card off screen: it scrolls internally instead. */
   right: 0;
-  bottom: calc(100% + 8px);
+  bottom: 0;
   z-index: 2;
   width: 272px;
   max-width: calc(100vw - 32px);
+  max-height: min(620px, calc(100dvh - 96px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
   padding: 10px 11px 11px;
   border: 1px solid rgba(92, 225, 255, 0.24);
   border-radius: 10px;
   background: rgba(4, 16, 30, 0.97);
   backdrop-filter: blur(18px);
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+}
+
+.qd-popover.is-flanking {
+  right: calc(100% + 10px);
+}
+
+.qd-popover::-webkit-scrollbar {
+  width: 8px;
+}
+
+.qd-popover::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background: rgba(92, 225, 255, 0.26);
+  background-clip: content-box;
 }
 
 .qd-pop-head {
@@ -5499,6 +5522,12 @@ input[type="range"]:disabled {
 .quick-dock,
 .atom-card {
   z-index: 14;
+}
+
+/* An open popover reaches past the dock's top edge into the status rail; lift
+   the whole dock only while a card is open so it never gets painted under. */
+.quick-dock.has-popover {
+  z-index: 18;
 }
 /* --- legend: keep the intended 2-column compaction; never shrink rows --- */
 .status-rail .legend {
